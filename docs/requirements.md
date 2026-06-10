@@ -1,0 +1,51 @@
+# Requirements
+
+## Project Name
+
+Linux C++ High-Concurrency Object Storage Service
+
+## Positioning
+
+This project targets formal C++ backend/software engineer roles. It should demonstrate:
+
+- Linux C++ server-side development
+- TCP/IP and HTTP protocol handling
+- High-concurrency network programming
+- Multi-threaded task processing
+- Object/file storage service design
+- Database metadata management
+- Reliability, observability, and benchmark awareness
+
+## MVP Scope
+
+The first version should support:
+
+- Start a TCP server on a configurable port.
+- Parse basic HTTP requests.
+- Provide a health check endpoint.
+- Upload a file.
+- Download a file.
+- List stored files.
+- Delete a file.
+- Log access and error events.
+
+## Advanced Scope
+
+After MVP, add:
+
+- epoll + non-blocking IO + Reactor event loop.
+- Thread pool for request processing.
+- SHA-256 file integrity verification.
+- SQLite metadata storage.
+- Token-based authentication.
+- Instant upload based on SHA-256.
+- Chunked upload and merge.
+- Range download.
+- Metrics endpoint: QPS, active connections, error count, average latency.
+- Benchmark report using ab or wrk.
+
+## Non-Goals
+
+- Do not build a full distributed object storage system at the beginning.
+- Do not introduce Kubernetes, complex service discovery, or multi-node replication in MVP.
+- Do not over-design before a stable single-node version is running.
