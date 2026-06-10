@@ -188,6 +188,37 @@ std::optional<ObjectInfo> MetadataStore::getObject(const std::string& id, std::s
     return std::nullopt;
 }
 
+std::optional<ObjectInfo> MetadataStore::findObjectBySha256(const std::string& sha256,
+                                                            std::uint64_t size,
+                                                            std::string& error)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        error = last_error_;
+        return std::nullopt;
+    }
+
+    Statement stmt(db_,
+                   "SELECT id, filename, path, size, sha256, created_at "
+                   "FROM objects WHERE sha256 = ? AND size = ? ORDER BY id ASC LIMIT 1;",
+                   error);
+    if (stmt.get() == nullptr) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_text(stmt.get(), 1, sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 2, static_cast<sqlite3_int64>(size));
+
+    const int rc = sqlite3_step(stmt.get());
+    if (rc == SQLITE_ROW) {
+        return rowToObject(stmt.get());
+    }
+    if (rc != SQLITE_DONE) {
+        error = sqlite3_errmsg(db_);
+    }
+    return std::nullopt;
+}
+
 std::vector<ObjectInfo> MetadataStore::listObjects(std::string& error)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -247,6 +278,30 @@ bool MetadataStore::deleteObject(const std::string& id, std::string& error)
     return true;
 }
 
+std::uint64_t MetadataStore::countObjectsByPath(const std::filesystem::path& path,
+                                                std::string& error)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr) {
+        error = last_error_;
+        return 0;
+    }
+
+    Statement stmt(db_, "SELECT COUNT(*) FROM objects WHERE path = ?;", error);
+    if (stmt.get() == nullptr) {
+        return 0;
+    }
+
+    const std::string path_text = path.string();
+    sqlite3_bind_text(stmt.get(), 1, path_text.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+        error = sqlite3_errmsg(db_);
+        return 0;
+    }
+    return static_cast<std::uint64_t>(sqlite3_column_int64(stmt.get(), 0));
+}
+
 bool MetadataStore::initialize()
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -278,6 +333,14 @@ bool MetadataStore::initialize()
               "sha256 TEXT NOT NULL,"
               "created_at TEXT NOT NULL"
               ");")) {
+        return false;
+    }
+    if (!exec("CREATE INDEX IF NOT EXISTS idx_objects_sha256_size "
+              "ON objects(sha256, size);")) {
+        return false;
+    }
+    if (!exec("CREATE INDEX IF NOT EXISTS idx_objects_path "
+              "ON objects(path);")) {
         return false;
     }
     return true;

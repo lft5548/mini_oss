@@ -36,10 +36,13 @@ Current MVP status:
 - `GET /health`: done.
 - 404 response for unknown GET paths: done.
 - `POST /objects`: done.
+- `POST /objects/instant`: done.
 - `GET /objects`: done.
 - `GET /objects/{id}`: done.
 - `DELETE /objects/{id}`: done.
 - SHA-256 object metadata: done.
+- SHA-256 based deduplication and instant upload: done.
+- Shared object reference cleanup: done.
 - SQLite metadata persistence: done.
 - Thread pool request processing: done.
 - Config file parsing and command-line override: done.
@@ -53,6 +56,7 @@ Known limitations before the next phase:
 - Metrics are in-process counters and reset after service restart.
 - File upload currently accepts the full HTTP body in memory.
 - Token auth is static shared-token auth; later versions can add users, roles, or signed URLs.
+- Deduplication is single-node metadata deduplication; later versions can add content-addressed storage layout and garbage collection jobs.
 - No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.
 - Large response sending still happens in the event loop; later versions can add EPOLLOUT output buffers.
 

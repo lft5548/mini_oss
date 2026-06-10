@@ -34,8 +34,11 @@ public:
     std::optional<std::string> nextObjectId(std::string& error);
     bool insertObject(const ObjectInfo& info, std::string& error);
     std::optional<ObjectInfo> getObject(const std::string& id, std::string& error);
+    std::optional<ObjectInfo> findObjectBySha256(const std::string& sha256, std::uint64_t size,
+                                                 std::string& error);
     std::vector<ObjectInfo> listObjects(std::string& error);
     bool deleteObject(const std::string& id, std::string& error);
+    std::uint64_t countObjectsByPath(const std::filesystem::path& path, std::string& error);
 
 private:
     bool initialize();

@@ -47,6 +47,9 @@ Linux File System / SQLite / Redis(optional)
 - Generate object IDs.
 - Support download, list, and delete.
 - Verify SHA-256 integrity.
+- Reuse existing physical files when uploaded content has the same SHA-256 and size.
+- Support instant upload by creating new metadata for an existing SHA-256 without resending the file body.
+- Delete metadata first and remove the physical file only when no remaining object references point to it.
 - Current MVP stores object files under `storage/objects` and persists metadata through SQLite.
 
 ### Metadata Store
@@ -54,6 +57,7 @@ Linux File System / SQLite / Redis(optional)
 - Store object metadata: id, filename, path, size, sha256, owner, created_at.
 - Current implementation uses SQLite and stores metadata in `storage/metadata.db`.
 - SQLite WAL mode is enabled for the local single-node metadata store.
+- `sha256 + size` and `path` indexes support dedup lookup and reference-count style cleanup.
 
 ### Auth
 
@@ -86,6 +90,7 @@ Linux File System / SQLite / Redis(optional)
 ```text
 GET    /health
 POST   /objects
+POST   /objects/instant
 GET    /objects
 GET    /objects/{id}
 DELETE /objects/{id}
@@ -98,6 +103,7 @@ GET    /metrics
 ```text
 GET /health
 POST /objects
+POST /objects/instant
 GET /objects
 GET /objects/{id}
 DELETE /objects/{id}

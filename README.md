@@ -58,6 +58,7 @@ The current MVP supports:
 - `GET /health`
 - `404 Not Found` for unknown GET paths
 - `POST /objects` upload an object body
+- `POST /objects/instant` create an object by existing SHA-256 metadata
 - `GET /objects` list persisted object metadata
 - `GET /objects/{id}` download an object
 - `DELETE /objects/{id}` delete an object
@@ -69,6 +70,7 @@ The current MVP supports:
 - access/error/slow request logs under configurable log directory
 - optional Token authentication for object APIs
 - SHA-256 object integrity metadata
+- content deduplication and instant upload based on SHA-256
 - SQLite metadata persistence under `storage/metadata.db`
 
 ## Smoke Test
@@ -83,6 +85,9 @@ Expected checks:
 - `/not-found` returns `HTTP/1.1 404 Not Found`
 - object upload/list/download/delete flow passes
 - object metadata survives a service restart
+- duplicate object bodies reuse the existing physical file
+- instant upload creates metadata without resending object content
+- shared physical files are removed only after the last object reference is deleted
 - concurrent object uploads return unique persisted object IDs
 - config file startup and command-line thread override work
 - `access.log`, `error.log`, and `slow.log` are generated
@@ -130,6 +135,15 @@ Upload:
 curl -i -X POST http://127.0.0.1:8080/objects \
   -H "X-Filename: hello.txt" \
   --data-binary "hello mini oss"
+```
+
+Instant upload by SHA-256:
+
+```bash
+curl -i -X POST http://127.0.0.1:8080/objects/instant \
+  -H "X-Filename: hello-copy.txt" \
+  -H "X-Object-Sha256: f40026b1d6ecc4c661b3913acae18b8e19f4a223ab34f1d816caeeec497e2e93" \
+  -H "X-Object-Size: 14"
 ```
 
 List:

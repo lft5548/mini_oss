@@ -1,10 +1,13 @@
 #include "mini_oss/object_store.h"
 
 #include <chrono>
+#include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <mutex>
 #include <openssl/sha.h>
+#include <optional>
 #include <shared_mutex>
 #include <sstream>
 #include <utility>
@@ -49,7 +52,15 @@ std::string jsonEscape(const std::string& value)
     return oss.str();
 }
 
-std::string objectInfoJson(const ObjectInfo& info)
+std::string lowerCopy(std::string value)
+{
+    for (char& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return value;
+}
+
+std::string objectInfoJson(const ObjectInfo& info, const std::string& extra_fields = {})
 {
     std::ostringstream body;
     body << "{"
@@ -57,7 +68,11 @@ std::string objectInfoJson(const ObjectInfo& info)
          << "\"filename\":\"" << jsonEscape(info.filename) << "\","
          << "\"size\":" << info.size << ","
          << "\"sha256\":\"" << info.sha256 << "\","
-         << "\"created_at\":\"" << info.created_at << "\""
+         << "\"created_at\":\"" << info.created_at << "\"";
+    if (!extra_fields.empty()) {
+        body << ',' << extra_fields;
+    }
+    body
          << "}";
     return body.str();
 }
@@ -80,7 +95,25 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
         return HttpResponse::badRequest("empty object body");
     }
 
+    const std::uint64_t object_size = request.body.size();
+    const std::string object_sha256 = sha256Hex(request.body);
     std::string error;
+    const auto existing = metadata_store_.findObjectBySha256(object_sha256, object_size, error);
+    if (!error.empty()) {
+        return HttpResponse::text(500, "Internal Server Error",
+                                  "cannot query object metadata: " + error + "\n");
+    }
+    if (existing.has_value()) {
+        if (!std::filesystem::exists(existing->path)) {
+            return HttpResponse::text(500, "Internal Server Error",
+                                      "deduplicated object file is missing\n");
+        }
+
+        const std::string filename = sanitizeFilename(
+            headerOrDefault(request, "x-filename", existing->filename));
+        return createMetadataAlias(existing.value(), filename, false);
+    }
+
     const auto id = metadata_store_.nextObjectId(error);
     if (!id.has_value()) {
         return HttpResponse::text(500, "Internal Server Error", "cannot allocate object id: " + error + "\n");
@@ -102,8 +135,8 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
     info.id = id.value();
     info.filename = filename;
     info.path = path;
-    info.size = request.body.size();
-    info.sha256 = sha256Hex(request.body);
+    info.size = object_size;
+    info.sha256 = object_sha256;
     info.created_at = now();
 
     if (!metadata_store_.insertObject(info, error)) {
@@ -113,6 +146,39 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
     }
 
     return HttpResponse::json(201, "Created", objectInfoJson(info) + "\n");
+}
+
+HttpResponse ObjectStore::createInstantObject(const HttpRequest& request)
+{
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+
+    const std::string sha256 = lowerCopy(headerOrDefault(request, "x-object-sha256", ""));
+    if (!isValidSha256(sha256)) {
+        return HttpResponse::badRequest("missing or invalid X-Object-Sha256");
+    }
+
+    const auto size = parseSize(headerOrDefault(request, "x-object-size", ""));
+    if (!size.has_value()) {
+        return HttpResponse::badRequest("missing or invalid X-Object-Size");
+    }
+
+    std::string error;
+    const auto existing = metadata_store_.findObjectBySha256(sha256, size.value(), error);
+    if (!error.empty()) {
+        return HttpResponse::text(500, "Internal Server Error",
+                                  "cannot query object metadata: " + error + "\n");
+    }
+    if (!existing.has_value()) {
+        return HttpResponse::notFound();
+    }
+    if (!std::filesystem::exists(existing->path)) {
+        return HttpResponse::text(500, "Internal Server Error",
+                                  "deduplicated object file is missing\n");
+    }
+
+    const std::string filename = sanitizeFilename(
+        headerOrDefault(request, "x-filename", existing->filename));
+    return createMetadataAlias(existing.value(), filename, true);
 }
 
 HttpResponse ObjectStore::listObjects(const HttpRequest&)
@@ -194,12 +260,24 @@ HttpResponse ObjectStore::deleteObject(const HttpRequest& request)
                                                                  "cannot delete object metadata: " + error + "\n");
     }
 
-    std::error_code ec;
-    std::filesystem::remove(info->path, ec);
-    if (ec) {
-        return HttpResponse::text(500, "Internal Server Error", "cannot delete object file\n");
+    const auto remaining_refs = metadata_store_.countObjectsByPath(info->path, error);
+    if (!error.empty()) {
+        return HttpResponse::text(500, "Internal Server Error",
+                                  "cannot count object references: " + error + "\n");
     }
-    return HttpResponse::json(200, "OK", "{\"deleted\":true}\n");
+
+    bool removed_file = false;
+    if (remaining_refs == 0) {
+        std::error_code ec;
+        std::filesystem::remove(info->path, ec);
+        if (ec) {
+            return HttpResponse::text(500, "Internal Server Error", "cannot delete object file\n");
+        }
+        removed_file = true;
+    }
+    return HttpResponse::json(200, "OK",
+                              std::string("{\"deleted\":true,\"removed_file\":")
+                                  + (removed_file ? "true" : "false") + "}\n");
 }
 
 std::string ObjectStore::extractObjectId(const std::string& path)
@@ -226,6 +304,34 @@ std::string ObjectStore::sanitizeFilename(const std::string& filename)
     return clean;
 }
 
+bool ObjectStore::isValidSha256(const std::string& sha256)
+{
+    if (sha256.size() != 64) {
+        return false;
+    }
+    for (unsigned char ch : sha256) {
+        if (std::isxdigit(ch) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<std::uint64_t> ObjectStore::parseSize(const std::string& value)
+{
+    if (value.empty()) {
+        return std::nullopt;
+    }
+
+    char* end = nullptr;
+    errno = 0;
+    const auto parsed = std::strtoull(value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0') {
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(parsed);
+}
+
 std::string ObjectStore::sha256Hex(const std::string& data)
 {
     unsigned char hash[SHA256_DIGEST_LENGTH];
@@ -236,6 +342,35 @@ std::string ObjectStore::sha256Hex(const std::string& data)
         oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
     }
     return oss.str();
+}
+
+HttpResponse ObjectStore::createMetadataAlias(const ObjectInfo& source, const std::string& filename,
+                                              bool instant_upload)
+{
+    std::string error;
+    const auto id = metadata_store_.nextObjectId(error);
+    if (!id.has_value()) {
+        return HttpResponse::text(500, "Internal Server Error", "cannot allocate object id: " + error + "\n");
+    }
+
+    ObjectInfo info;
+    info.id = id.value();
+    info.filename = filename;
+    info.path = source.path;
+    info.size = source.size;
+    info.sha256 = source.sha256;
+    info.created_at = now();
+
+    if (!metadata_store_.insertObject(info, error)) {
+        return HttpResponse::text(500, "Internal Server Error",
+                                  "cannot save object metadata: " + error + "\n");
+    }
+
+    std::ostringstream extra;
+    extra << "\"deduplicated\":true,"
+          << "\"instant_upload\":" << (instant_upload ? "true" : "false") << ','
+          << "\"source_id\":\"" << jsonEscape(source.id) << "\"";
+    return HttpResponse::json(201, "Created", objectInfoJson(info, extra.str()) + "\n");
 }
 
 std::string ObjectStore::now()

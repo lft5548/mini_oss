@@ -61,6 +61,9 @@ HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
     router_.addRoute(HttpMethod::Post, "/objects", [this](const HttpRequest& request) {
         return object_store_.createObject(request);
     });
+    router_.addRoute(HttpMethod::Post, "/objects/instant", [this](const HttpRequest& request) {
+        return object_store_.createInstantObject(request);
+    });
     router_.addRoute(HttpMethod::Get, "/objects", [this](const HttpRequest& request) {
         return object_store_.listObjects(request);
     });

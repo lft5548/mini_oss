@@ -98,6 +98,36 @@ def main() -> int:
         )
         upload_body = json.loads(response_body(upload))
         object_id = upload_body["id"]
+        duplicate_upload = request(
+            "/objects",
+            method="POST",
+            body=b"hello mini oss",
+            headers={**AUTH_HEADERS, "X-Filename": "hello-copy.txt"},
+        )
+        duplicate_body = json.loads(response_body(duplicate_upload))
+        duplicate_id = duplicate_body["id"]
+        instant_upload = request(
+            "/objects/instant",
+            method="POST",
+            headers={
+                **AUTH_HEADERS,
+                "X-Filename": "hello-instant.txt",
+                "X-Object-Sha256": upload_body["sha256"],
+                "X-Object-Size": str(upload_body["size"]),
+            },
+        )
+        instant_body = json.loads(response_body(instant_upload))
+        instant_id = instant_body["id"]
+        instant_miss = request(
+            "/objects/instant",
+            method="POST",
+            headers={
+                **AUTH_HEADERS,
+                "X-Filename": "missing.txt",
+                "X-Object-Sha256": "0" * 64,
+                "X-Object-Size": str(upload_body["size"]),
+            },
+        )
         with ThreadPoolExecutor(max_workers=8) as executor:
             parallel_ids = list(executor.map(upload_parallel, range(8)))
 
@@ -111,6 +141,19 @@ def main() -> int:
 
         delete = request(f"/objects/{object_id}", method="DELETE", headers=AUTH_HEADERS)
         deleted_download = request(f"/objects/{object_id}", headers=AUTH_HEADERS)
+        instant_download_after_source_delete = request(
+            f"/objects/{instant_id}", headers=AUTH_HEADERS
+        )
+        delete_duplicate = request(
+            f"/objects/{duplicate_id}", method="DELETE", headers=AUTH_HEADERS
+        )
+        instant_download_after_duplicate_delete = request(
+            f"/objects/{instant_id}", headers=AUTH_HEADERS
+        )
+        delete_instant = request(
+            f"/objects/{instant_id}", method="DELETE", headers=AUTH_HEADERS
+        )
+        deleted_instant_download = request(f"/objects/{instant_id}", headers=AUTH_HEADERS)
         metrics = request("/metrics")
         metrics_body = json.loads(response_body(metrics))
     finally:
@@ -128,6 +171,12 @@ def main() -> int:
     print(unauthorized_upload)
     print("=== POST /objects ===")
     print(upload)
+    print("=== POST /objects duplicate body ===")
+    print(duplicate_upload)
+    print("=== POST /objects/instant ===")
+    print(instant_upload)
+    print("=== POST /objects/instant missing source ===")
+    print(instant_miss)
     print("=== GET /objects ===")
     print(listing)
     print("=== GET /objects/{id} ===")
@@ -142,6 +191,16 @@ def main() -> int:
     print(delete)
     print("=== GET deleted object ===")
     print(deleted_download)
+    print("=== GET instant object after source delete ===")
+    print(instant_download_after_source_delete)
+    print("=== DELETE duplicate object ===")
+    print(delete_duplicate)
+    print("=== GET instant object after duplicate delete ===")
+    print(instant_download_after_duplicate_delete)
+    print("=== DELETE instant object ===")
+    print(delete_instant)
+    print("=== GET deleted instant object ===")
+    print(deleted_instant_download)
     print("=== GET /metrics ===")
     print(metrics)
     print("=== parsed metrics ===")
@@ -178,12 +237,32 @@ def main() -> int:
     if "HTTP/1.1 201 Created" not in upload or '"sha256"' not in upload:
         print("object upload failed", file=sys.stderr)
         return 1
+    if (
+        "HTTP/1.1 201 Created" not in duplicate_upload
+        or duplicate_body.get("deduplicated") is not True
+        or duplicate_body.get("instant_upload") is not False
+        or duplicate_body.get("source_id") != object_id
+    ):
+        print("duplicate upload deduplication failed", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 201 Created" not in instant_upload
+        or instant_body.get("deduplicated") is not True
+        or instant_body.get("instant_upload") is not True
+        or instant_body.get("source_id") != object_id
+    ):
+        print("instant upload failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 404 Not Found" not in instant_miss:
+        print("instant upload miss check failed", file=sys.stderr)
+        return 1
     if "HTTP/1.1 200 OK" not in listing:
         print("object list failed", file=sys.stderr)
         return 1
     listed_ids = {item["id"] for item in json.loads(response_body(listing))["objects"]}
-    if object_id not in listed_ids:
-        print("object list missed uploaded object", file=sys.stderr)
+    expected_ids = {object_id, duplicate_id, instant_id}
+    if not expected_ids.issubset(listed_ids):
+        print("object list missed uploaded/deduplicated object", file=sys.stderr)
         return 1
     if len(set(parallel_ids)) != len(parallel_ids):
         print("concurrent upload ids are not unique", file=sys.stderr)
@@ -194,17 +273,55 @@ def main() -> int:
     if "HTTP/1.1 200 OK" not in download or "hello mini oss" not in download:
         print("object download failed", file=sys.stderr)
         return 1
-    if "HTTP/1.1 200 OK" not in restarted_listing or object_id not in restarted_listing:
+    if (
+        "HTTP/1.1 200 OK" not in restarted_listing
+        or object_id not in restarted_listing
+        or duplicate_id not in restarted_listing
+        or instant_id not in restarted_listing
+    ):
         print("metadata persistence list check failed", file=sys.stderr)
         return 1
     if "HTTP/1.1 200 OK" not in restarted_download or "hello mini oss" not in restarted_download:
         print("metadata persistence download check failed", file=sys.stderr)
         return 1
-    if "HTTP/1.1 200 OK" not in delete or '"deleted":true' not in delete:
-        print("object delete failed", file=sys.stderr)
+    if (
+        "HTTP/1.1 200 OK" not in delete
+        or '"deleted":true' not in delete
+        or '"removed_file":false' not in delete
+    ):
+        print("source object delete failed", file=sys.stderr)
         return 1
     if "HTTP/1.1 404 Not Found" not in deleted_download:
         print("deleted object 404 check failed", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 200 OK" not in instant_download_after_source_delete
+        or "hello mini oss" not in instant_download_after_source_delete
+    ):
+        print("deduplicated object lost after source delete", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 200 OK" not in delete_duplicate
+        or '"deleted":true' not in delete_duplicate
+        or '"removed_file":false' not in delete_duplicate
+    ):
+        print("duplicate object delete failed", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 200 OK" not in instant_download_after_duplicate_delete
+        or "hello mini oss" not in instant_download_after_duplicate_delete
+    ):
+        print("instant object lost before last reference delete", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 200 OK" not in delete_instant
+        or '"deleted":true' not in delete_instant
+        or '"removed_file":true' not in delete_instant
+    ):
+        print("last deduplicated object delete failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 404 Not Found" not in deleted_instant_download:
+        print("deleted instant object 404 check failed", file=sys.stderr)
         return 1
     if "HTTP/1.1 200 OK" not in metrics:
         print("metrics endpoint failed", file=sys.stderr)
@@ -245,6 +362,9 @@ def main() -> int:
         return 1
     if "method=POST path=/objects status=201" not in access_text:
         print("access log upload entry missing", file=sys.stderr)
+        return 1
+    if "method=POST path=/objects/instant status=201" not in access_text:
+        print("access log instant upload entry missing", file=sys.stderr)
         return 1
     if "method=GET path=/not-found status=404" not in access_text:
         print("access log 404 entry missing", file=sys.stderr)
