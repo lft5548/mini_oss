@@ -71,11 +71,9 @@ Linux File System / SQLite / Redis(optional)
 
 ### Metrics
 
-- Total requests.
-- Failed requests.
-- Active connections.
-- Average latency.
-- Bytes uploaded/downloaded.
+- Thread-safe atomic counters for runtime service statistics.
+- Count active connections, total requests, success/failure requests, request bytes, response bytes, total latency, and average latency.
+- `HttpServer` updates metrics when a request completes and exposes them through `GET /metrics`.
 
 ## MVP API Draft
 
@@ -85,6 +83,7 @@ POST   /objects
 GET    /objects
 GET    /objects/{id}
 DELETE /objects/{id}
+GET /metrics
 GET    /metrics
 ```
 

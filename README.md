@@ -60,6 +60,7 @@ The current MVP supports:
 - `GET /objects` list persisted object metadata
 - `GET /objects/{id}` download an object
 - `DELETE /objects/{id}` delete an object
+- `GET /metrics` expose runtime metrics
 - Linux socket + non-blocking listening socket
 - epoll event loop
 - worker thread pool for HTTP request handling
@@ -83,6 +84,15 @@ Expected checks:
 - concurrent object uploads return unique persisted object IDs
 - config file startup and command-line thread override work
 - `access.log`, `error.log`, and `slow.log` are generated
+- `/metrics` exposes runtime counters for requests, status results, bytes, latency, and active connections
+
+## Metrics
+
+`GET /metrics` returns runtime service counters in JSON format, including total requests, success/failure counts, active connections, request/response bytes, total latency, and average latency.
+
+```bash
+curl -i http://127.0.0.1:8080/metrics
+```
 
 ## Logs
 

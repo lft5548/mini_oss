@@ -101,6 +101,8 @@ def main() -> int:
 
         delete = request(f"/objects/{object_id}", method="DELETE")
         deleted_download = request(f"/objects/{object_id}")
+        metrics = request("/metrics")
+        metrics_body = json.loads(response_body(metrics))
     finally:
         out, err = stop_server(proc)
 
@@ -128,6 +130,10 @@ def main() -> int:
     print(delete)
     print("=== GET deleted object ===")
     print(deleted_download)
+    print("=== GET /metrics ===")
+    print(metrics)
+    print("=== parsed metrics ===")
+    print(metrics_body)
     print("=== server stdout ===")
     print(out)
     print("=== server stderr ===")
@@ -185,6 +191,34 @@ def main() -> int:
     if "HTTP/1.1 404 Not Found" not in deleted_download:
         print("deleted object 404 check failed", file=sys.stderr)
         return 1
+    if "HTTP/1.1 200 OK" not in metrics:
+        print("metrics endpoint failed", file=sys.stderr)
+        return 1
+    expected_metric_fields = {
+        "active_connections",
+        "total_requests",
+        "success_requests",
+        "failed_requests",
+        "request_bytes",
+        "response_bytes",
+        "total_latency_ms",
+        "average_latency_ms",
+    }
+    if not expected_metric_fields.issubset(metrics_body):
+        print("metrics fields missing", file=sys.stderr)
+        return 1
+    if metrics_body["total_requests"] < 4:
+        print("metrics total request count too small", file=sys.stderr)
+        return 1
+    if metrics_body["success_requests"] < 3 or metrics_body["failed_requests"] < 1:
+        print("metrics success/failure count invalid", file=sys.stderr)
+        return 1
+    if metrics_body["active_connections"] < 1:
+        print("metrics active connection count invalid", file=sys.stderr)
+        return 1
+    if metrics_body["request_bytes"] <= 0 or metrics_body["response_bytes"] <= 0:
+        print("metrics byte counters invalid", file=sys.stderr)
+        return 1
     access_text = access_log.read_text(encoding="utf-8") if access_log.exists() else ""
     error_text = error_log.read_text(encoding="utf-8") if error_log.exists() else ""
     slow_text = slow_log.read_text(encoding="utf-8") if slow_log.exists() else ""
@@ -196,6 +230,9 @@ def main() -> int:
         return 1
     if "method=GET path=/not-found status=404" not in access_text:
         print("access log 404 entry missing", file=sys.stderr)
+        return 1
+    if "method=GET path=/metrics status=200" not in access_text:
+        print("access log metrics entry missing", file=sys.stderr)
         return 1
     if "level=INFO" not in error_text:
         print("error log info entry missing", file=sys.stderr)

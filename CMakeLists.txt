@@ -21,6 +21,7 @@ add_executable(mini_oss
     src/http_server.cpp
     src/logger.cpp
     src/metadata_store.cpp
+    src/metrics.cpp
     src/object_store.cpp
     src/router.cpp
     src/thread_pool.cpp

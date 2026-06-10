@@ -54,6 +54,9 @@ HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
     router_.addRoute(HttpMethod::Get, "/health", [](const HttpRequest&) {
         return HttpResponse::json(200, "OK", "{\"status\":\"ok\"}\n");
     });
+    router_.addRoute(HttpMethod::Get, "/metrics", [this](const HttpRequest&) {
+        return HttpResponse::json(200, "OK", metrics_.toJson() + "\n");
+    });
     router_.addRoute(HttpMethod::Post, "/objects", [this](const HttpRequest& request) {
         return object_store_.createObject(request);
     });
@@ -241,6 +244,7 @@ void HttpServer::acceptClients()
 
         clients_[client_fd] =
             ClientState {{}, remote_addr.str(), std::chrono::steady_clock::now(), next_generation_++, false};
+        metrics_.connectionOpened();
     }
 }
 
@@ -273,8 +277,8 @@ void HttpServer::handleClientRead(int client_fd)
                 const auto serialized = response.serialize();
                 const auto duration_ms = elapsedMs(client_it->second.started_at);
                 sendAll(client_fd, serialized);
-                logAccess(client_it->second.remote_addr, "-", "-", response.statusCode(), serialized.size(),
-                          duration_ms);
+                logAccess(client_it->second.remote_addr, "-", "-", response.statusCode(), request.size(),
+                          serialized.size(), duration_ms);
                 closeClient(client_fd);
                 return;
             }
@@ -284,8 +288,8 @@ void HttpServer::handleClientRead(int client_fd)
                 const auto serialized = response.serialize();
                 const auto duration_ms = elapsedMs(client_it->second.started_at);
                 sendAll(client_fd, serialized);
-                logAccess(client_it->second.remote_addr, "-", "-", response.statusCode(), serialized.size(),
-                          duration_ms);
+                logAccess(client_it->second.remote_addr, "-", "-", response.statusCode(), request.size(),
+                          serialized.size(), duration_ms);
                 closeClient(client_fd);
                 return;
             }
@@ -349,14 +353,16 @@ void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::str
 
         const auto serialized = http_response.serialize();
         const auto duration_ms = elapsedMs(started_at);
-        logAccess(remote_addr, method, path, http_response.statusCode(), serialized.size(), duration_ms);
+        logAccess(remote_addr, method, path, http_response.statusCode(), raw_request.size(),
+                  serialized.size(), duration_ms);
         enqueueResponse(client_fd, generation, std::move(serialized));
     });
 
     if (!queued) {
         const auto response = HttpResponse::text(503, "Service Unavailable", "server shutting down\n");
         const auto serialized = response.serialize();
-        logAccess(remote_addr, "-", "-", response.statusCode(), serialized.size(), elapsedMs(started_at));
+        logAccess(remote_addr, "-", "-", response.statusCode(), 0, serialized.size(),
+                  elapsedMs(started_at));
         enqueueResponse(client_fd, generation, serialized);
     }
 }
@@ -402,7 +408,9 @@ void HttpServer::closeClient(int client_fd)
     if (epoll_fd_ >= 0) {
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
     }
-    clients_.erase(client_fd);
+    if (clients_.erase(client_fd) > 0) {
+        metrics_.connectionClosed();
+    }
     ::close(client_fd);
 }
 
@@ -414,8 +422,10 @@ void HttpServer::logServerError(const std::string& message)
 
 void HttpServer::logAccess(const std::string& remote, const std::string& method,
                            const std::string& path, int status_code,
-                           std::size_t response_bytes, std::uint64_t duration_ms)
+                           std::size_t request_bytes, std::size_t response_bytes,
+                           std::uint64_t duration_ms)
 {
+    metrics_.recordRequest(status_code, request_bytes, response_bytes, duration_ms);
     logger_.access(remote, method, path, status_code, response_bytes, duration_ms);
     if (duration_ms >= slow_request_ms_) {
         logger_.slow(remote, method, path, status_code, duration_ms);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mini_oss/logger.h"
+#include "mini_oss/metrics.h"
 #include "mini_oss/object_store.h"
 #include "mini_oss/router.h"
 #include "mini_oss/thread_pool.h"
@@ -41,7 +42,8 @@ private:
     void closeClient(int client_fd);
     void logServerError(const std::string& message);
     void logAccess(const std::string& remote, const std::string& method, const std::string& path,
-                   int status_code, std::size_t response_bytes, std::uint64_t duration_ms);
+                   int status_code, std::size_t request_bytes, std::size_t response_bytes,
+                   std::uint64_t duration_ms);
 
     static bool setNonBlocking(int fd);
     static bool sendAll(int fd, const std::string& data);
@@ -69,6 +71,7 @@ private:
     std::mutex responses_mutex_;
     std::queue<PendingResponse> responses_;
     Logger& logger_;
+    Metrics metrics_;
     std::uint64_t slow_request_ms_ = 200;
     ObjectStore object_store_;
     Router router_;

@@ -44,10 +44,12 @@ Current MVP status:
 - Thread pool request processing: done.
 - Config file parsing and command-line override: done.
 - Access/error/slow request logs: done.
+- `/metrics` runtime monitoring endpoint: done.
 
 Known limitations before the next phase:
 
 - Logging is synchronous file append; later versions can add async logging.
+- Metrics are in-process counters and reset after service restart.
 - File upload currently accepts the full HTTP body in memory.
 - No user authentication yet.
 - No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.
