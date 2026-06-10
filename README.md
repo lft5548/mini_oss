@@ -50,7 +50,8 @@ Command-line options override the config file:
 ```bash
 ./build/mini_oss --config config.ini --port 8080 --threads 4 \
   --storage-dir storage --log-dir logs --slow-request-ms 200 \
-  --auth-token dev-token
+  --max-request-bytes 10485760 --max-upload-bytes 134217728 \
+  --stream-upload-threshold-bytes 1048576 --auth-token dev-token
 ```
 
 The current MVP supports:
@@ -73,6 +74,8 @@ The current MVP supports:
 - SHA-256 object integrity metadata
 - content deduplication and instant upload based on SHA-256
 - repeatable benchmark report generated with ab and wrk
+- configurable upload size limits and stream-upload threshold
+- large `POST /objects` request bodies streamed to `storage/tmp_uploads` before metadata processing
 - SQLite metadata persistence under `storage/metadata.db`
 
 ## Smoke Test
@@ -93,6 +96,8 @@ Expected checks:
 - Range download returns `206 Partial Content` and invalid ranges return `416 Range Not Satisfiable`
 - concurrent object uploads return unique persisted object IDs
 - config file startup and command-line thread override work
+- large upload can exceed the normal in-memory request limit and still complete through the streaming path
+- temporary upload files are cleaned after success or deduplication
 - `access.log`, `error.log`, and `slow.log` are generated
 - `/metrics` exposes runtime counters for requests, status results, bytes, latency, and active connections
 - object APIs return `401 Unauthorized` when auth token is configured and missing
@@ -111,6 +116,22 @@ The generated report is written to `docs/benchmark.md` and includes QPS, mean la
 ## Authentication
 
 If `auth.token` or `--auth-token` is set, object APIs require either `Authorization: Bearer <token>` or `X-Auth-Token: <token>`. `GET /health` and `GET /metrics` remain public.
+
+## Large Uploads
+
+`POST /objects` uses two upload paths:
+
+- Small bodies are parsed into memory with the regular HTTP request path.
+- Bodies larger than `stream_upload_threshold_bytes` are streamed to a temporary file under `storage/tmp_uploads` while the socket is being read.
+
+After the upload completes, Mini-OSS computes SHA-256 from the temporary file in 64KB chunks, checks deduplication metadata, and either removes the temporary file for duplicate content or renames it into `storage/objects/{id}` for new content.
+
+The related resource controls are:
+
+- `max_request_bytes`: maximum size for regular in-memory HTTP requests.
+- `max_upload_bytes`: maximum accepted object upload size.
+- `stream_upload_threshold_bytes`: threshold for switching `POST /objects` to the file-backed upload path.
+
 
 ```bash
 curl -i -X POST http://127.0.0.1:8080/objects \

@@ -166,7 +166,7 @@ std::string httpMethodName(HttpMethod method)
     return "UNKNOWN";
 }
 
-HttpParseResult parseHttpRequest(const std::string& raw)
+HttpParseResult parseHttpRequestHead(const std::string& raw)
 {
     HttpParseResult result;
 
@@ -230,18 +230,34 @@ HttpParseResult parseHttpRequest(const std::string& raw)
         result.request.headers[key] = value;
     }
 
-    std::size_t content_length = 0;
-    if (!parseContentLength(result.request.headers, content_length, result.error)) {
-        result.complete = true;
+    result.complete = true;
+    result.ok = true;
+    return result;
+}
+
+HttpParseResult parseHttpRequest(const std::string& raw)
+{
+    HttpParseResult result = parseHttpRequestHead(raw);
+    if (!result.complete || !result.ok) {
         return result;
     }
 
+    std::size_t content_length = 0;
+    if (!parseContentLength(result.request.headers, content_length, result.error)) {
+        result.ok = false;
+        return result;
+    }
+
+    const auto header_end = raw.find("\r\n\r\n");
     const auto body_begin = header_end + 4;
     if (raw.size() < body_begin + content_length) {
+        result.complete = false;
+        result.ok = false;
         return result;
     }
 
     result.request.body = raw.substr(body_begin, content_length);
+    result.request.body_size = result.request.body.size();
     result.complete = true;
     result.ok = true;
     return result;

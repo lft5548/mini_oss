@@ -1,12 +1,14 @@
 #include "mini_oss/object_store.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <optional>
 #include <shared_mutex>
@@ -83,13 +85,19 @@ std::string objectInfoJson(const ObjectInfo& info, const std::string& extra_fiel
 ObjectStore::ObjectStore(std::filesystem::path root_dir)
     : root_dir_(std::move(root_dir))
     , object_dir_(root_dir_ / "objects")
+    , temp_upload_dir_(root_dir_ / "tmp_uploads")
     , metadata_store_(root_dir_ / "metadata.db")
 {
     std::filesystem::create_directories(object_dir_);
+    std::filesystem::create_directories(temp_upload_dir_);
 }
 
 HttpResponse ObjectStore::createObject(const HttpRequest& request)
 {
+    if (request.body_in_file) {
+        return createObjectFromFileBody(request);
+    }
+
     std::unique_lock<std::shared_mutex> lock(mutex_);
 
     if (request.body.empty()) {
@@ -422,6 +430,162 @@ std::string ObjectStore::sha256Hex(const std::string& data)
         oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
     }
     return oss.str();
+}
+
+std::optional<std::string> ObjectStore::sha256File(const std::filesystem::path& path,
+                                                   std::uint64_t& file_size,
+                                                   std::string& error)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        error = "cannot open uploaded object file";
+        return std::nullopt;
+    }
+
+    EVP_MD_CTX* context = EVP_MD_CTX_new();
+    if (context == nullptr) {
+        error = "cannot allocate sha256 context";
+        return std::nullopt;
+    }
+
+    if (EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1) {
+        EVP_MD_CTX_free(context);
+        error = "cannot initialize sha256 context";
+        return std::nullopt;
+    }
+
+    file_size = 0;
+    std::array<char, 64 * 1024> buffer {};
+    while (in) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto bytes = in.gcount();
+        if (bytes > 0) {
+            if (EVP_DigestUpdate(context, buffer.data(), static_cast<std::size_t>(bytes)) != 1) {
+                EVP_MD_CTX_free(context);
+                error = "cannot update sha256 digest";
+                return std::nullopt;
+            }
+            file_size += static_cast<std::uint64_t>(bytes);
+        }
+    }
+    if (!in.eof()) {
+        EVP_MD_CTX_free(context);
+        error = "cannot read uploaded object file";
+        return std::nullopt;
+    }
+
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hash_length = 0;
+    if (EVP_DigestFinal_ex(context, hash, &hash_length) != 1) {
+        EVP_MD_CTX_free(context);
+        error = "cannot finalize sha256 digest";
+        return std::nullopt;
+    }
+    EVP_MD_CTX_free(context);
+
+    std::ostringstream oss;
+    for (unsigned int i = 0; i < hash_length; ++i) {
+        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
+    }
+    return oss.str();
+}
+
+HttpResponse ObjectStore::createObjectFromFileBody(const HttpRequest& request)
+{
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+
+    bool temp_file_moved = false;
+    const auto cleanup_temp = [&] {
+        if (request.temporary_body_file && !temp_file_moved && !request.body_file_path.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(request.body_file_path, ignored);
+        }
+    };
+
+    if (request.body_file_path.empty()) {
+        cleanup_temp();
+        return HttpResponse::badRequest("missing upload body file");
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(request.body_file_path, ec)) {
+        cleanup_temp();
+        return HttpResponse::text(500, "Internal Server Error", "uploaded body file is missing\n");
+    }
+
+    std::uint64_t object_size = 0;
+    std::string hash_error;
+    const auto object_sha256 = sha256File(request.body_file_path, object_size, hash_error);
+    if (!object_sha256.has_value()) {
+        cleanup_temp();
+        return HttpResponse::text(500, "Internal Server Error", hash_error + "\n");
+    }
+    if (object_size == 0) {
+        cleanup_temp();
+        return HttpResponse::badRequest("empty object body");
+    }
+    if (request.body_size != 0 && object_size != request.body_size) {
+        cleanup_temp();
+        return HttpResponse::badRequest("uploaded body size mismatch");
+    }
+
+    std::string error;
+    const auto existing = metadata_store_.findObjectBySha256(object_sha256.value(), object_size, error);
+    if (!error.empty()) {
+        cleanup_temp();
+        return HttpResponse::text(500, "Internal Server Error",
+                                  "cannot query object metadata: " + error + "\n");
+    }
+    if (existing.has_value()) {
+        if (!std::filesystem::exists(existing->path)) {
+            cleanup_temp();
+            return HttpResponse::text(500, "Internal Server Error",
+                                      "deduplicated object file is missing\n");
+        }
+
+        const std::string filename = sanitizeFilename(
+            headerOrDefault(request, "x-filename", existing->filename));
+        cleanup_temp();
+        return createMetadataAlias(existing.value(), filename, false);
+    }
+
+    const auto id = metadata_store_.nextObjectId(error);
+    if (!id.has_value()) {
+        cleanup_temp();
+        return HttpResponse::text(500, "Internal Server Error", "cannot allocate object id: " + error + "\n");
+    }
+
+    const std::string filename = sanitizeFilename(headerOrDefault(request, "x-filename", "object_" + id.value()));
+    const std::filesystem::path path = object_dir_ / id.value();
+
+    std::filesystem::rename(request.body_file_path, path, ec);
+    if (ec) {
+        ec.clear();
+        std::filesystem::copy_file(request.body_file_path, path,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            cleanup_temp();
+            return HttpResponse::text(500, "Internal Server Error", "cannot move uploaded object file\n");
+        }
+        std::filesystem::remove(request.body_file_path, ec);
+    }
+    temp_file_moved = true;
+
+    ObjectInfo info;
+    info.id = id.value();
+    info.filename = filename;
+    info.path = path;
+    info.size = object_size;
+    info.sha256 = object_sha256.value();
+    info.created_at = now();
+
+    if (!metadata_store_.insertObject(info, error)) {
+        std::error_code remove_error;
+        std::filesystem::remove(path, remove_error);
+        return HttpResponse::text(500, "Internal Server Error", "cannot save object metadata: " + error + "\n");
+    }
+
+    return HttpResponse::json(201, "Created", objectInfoJson(info) + "\n");
 }
 
 HttpResponse ObjectStore::createMetadataAlias(const ObjectInfo& source, const std::string& filename,

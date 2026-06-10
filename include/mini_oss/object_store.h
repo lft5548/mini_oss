@@ -34,11 +34,16 @@ private:
     static std::optional<ByteRange> parseRangeHeader(const std::string& value, std::uint64_t total_size);
     static std::string sha256Hex(const std::string& data);
     static std::string now();
+    static std::optional<std::string> sha256File(const std::filesystem::path& path,
+                                                   std::uint64_t& file_size,
+                                                   std::string& error);
+    HttpResponse createObjectFromFileBody(const HttpRequest& request);
     HttpResponse createMetadataAlias(const ObjectInfo& source, const std::string& filename,
                                      bool instant_upload);
 
     std::filesystem::path root_dir_;
     std::filesystem::path object_dir_;
+    std::filesystem::path temp_upload_dir_;
     MetadataStore metadata_store_;
     mutable std::shared_mutex mutex_;
 };

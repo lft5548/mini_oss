@@ -99,6 +99,36 @@ bool setConfigValue(AppConfig& config, const std::string& key, const std::string
         return true;
     }
 
+    if (key == "max_request_bytes" || key == "server.max_request_bytes"
+        || key == "upload.max_request_bytes") {
+        if (!parseUnsigned(value, parsed, error) || parsed == 0) {
+            error = "invalid max_request_bytes: " + value;
+            return false;
+        }
+        config.max_request_bytes = static_cast<std::size_t>(parsed);
+        return true;
+    }
+
+    if (key == "max_upload_bytes" || key == "server.max_upload_bytes"
+        || key == "upload.max_upload_bytes") {
+        if (!parseUnsigned(value, parsed, error) || parsed == 0) {
+            error = "invalid max_upload_bytes: " + value;
+            return false;
+        }
+        config.max_upload_bytes = static_cast<std::size_t>(parsed);
+        return true;
+    }
+
+    if (key == "stream_upload_threshold_bytes" || key == "server.stream_upload_threshold_bytes"
+        || key == "upload.stream_upload_threshold_bytes") {
+        if (!parseUnsigned(value, parsed, error)) {
+            error = "invalid stream_upload_threshold_bytes: " + value;
+            return false;
+        }
+        config.stream_upload_threshold_bytes = static_cast<std::size_t>(parsed);
+        return true;
+    }
+
     if (key == "auth_token" || key == "auth.token" || key == "server.auth_token") {
         config.auth_token = value;
         return true;

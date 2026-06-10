@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 import shutil
@@ -70,7 +71,9 @@ def main() -> int:
     shutil.rmtree(log_dir, ignore_errors=True)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
-        "[server]\nport = 18080\nthreads = 2\nslow_request_ms = 0\n\n"
+        "[server]\nport = 18080\nthreads = 2\nslow_request_ms = 0\n"
+        "max_request_bytes = 4096\nmax_upload_bytes = 2097152\n"
+        "stream_upload_threshold_bytes = 1024\n\n"
         "[storage]\ndir = tmp/smoke_storage\n\n"
         "[logging]\ndir = tmp/smoke_logs\n\n"
         "[auth]\ntoken = smoke-token\n",
@@ -118,6 +121,31 @@ def main() -> int:
         )
         instant_body = json.loads(response_body(instant_upload))
         instant_id = instant_body["id"]
+        large_body = (b"large-stream-upload-" * 4096)[:65536]
+        large_sha256 = hashlib.sha256(large_body).hexdigest()
+        large_upload = request(
+            "/objects",
+            method="POST",
+            body=large_body,
+            headers={**AUTH_HEADERS, "X-Filename": "large-stream.bin"},
+        )
+        large_upload_body = json.loads(response_body(large_upload))
+        large_object_id = large_upload_body["id"]
+        large_duplicate_upload = request(
+            "/objects",
+            method="POST",
+            body=large_body,
+            headers={**AUTH_HEADERS, "X-Filename": "large-stream-copy.bin"},
+        )
+        large_duplicate_body = json.loads(response_body(large_duplicate_upload))
+        large_duplicate_id = large_duplicate_body["id"]
+        large_range = request(
+            f"/objects/{large_object_id}",
+            headers={**AUTH_HEADERS, "Range": "bytes=0-31"},
+        )
+        tmp_upload_files_after_large_upload = sorted(
+            (storage_dir / "tmp_uploads").glob("*.tmp")
+        )
         instant_miss = request(
             "/objects/instant",
             method="POST",
@@ -193,6 +221,12 @@ def main() -> int:
     print(instant_upload)
     print("=== POST /objects/instant missing source ===")
     print(instant_miss)
+    print("=== POST /objects large streaming upload ===")
+    print(large_upload)
+    print("=== POST /objects large duplicate streaming upload ===")
+    print(large_duplicate_upload)
+    print("=== GET /objects/{id} large Range bytes=0-31 ===")
+    print(large_range)
     print("=== GET /objects ===")
     print(listing)
     print("=== GET /objects/{id} ===")
@@ -280,6 +314,37 @@ def main() -> int:
     if "HTTP/1.1 404 Not Found" not in instant_miss:
         print("instant upload miss check failed", file=sys.stderr)
         return 1
+    if (
+        "HTTP/1.1 201 Created" not in large_upload
+        or large_upload_body.get("size") != len(large_body)
+        or large_upload_body.get("sha256") != large_sha256
+    ):
+        print("large streaming upload failed", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 201 Created" not in large_duplicate_upload
+        or large_duplicate_body.get("deduplicated") is not True
+        or large_duplicate_body.get("instant_upload") is not False
+        or large_duplicate_body.get("source_id") != large_object_id
+    ):
+        print("large streaming duplicate deduplication failed", file=sys.stderr)
+        return 1
+    if large_duplicate_id == large_object_id:
+        print("large duplicate did not create a distinct metadata alias", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 206 Partial Content" not in large_range
+        or f"Content-Range: bytes 0-31/{len(large_body)}" not in large_range
+        or response_body(large_range).encode("utf-8") != large_body[:32]
+    ):
+        print("large range download failed", file=sys.stderr)
+        return 1
+    if tmp_upload_files_after_large_upload:
+        print(
+            f"temporary upload files were not cleaned: {tmp_upload_files_after_large_upload}",
+            file=sys.stderr,
+        )
+        return 1
     if "HTTP/1.1 200 OK" not in listing:
         print("object list failed", file=sys.stderr)
         return 1
@@ -287,6 +352,10 @@ def main() -> int:
     expected_ids = {object_id, duplicate_id, instant_id}
     if not expected_ids.issubset(listed_ids):
         print("object list missed uploaded/deduplicated object", file=sys.stderr)
+        return 1
+    expected_large_ids = {large_object_id, large_duplicate_id}
+    if not expected_large_ids.issubset(listed_ids):
+        print("object list missed large uploaded/deduplicated object", file=sys.stderr)
         return 1
     if len(set(parallel_ids)) != len(parallel_ids):
         print("concurrent upload ids are not unique", file=sys.stderr)

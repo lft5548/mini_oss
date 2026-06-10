@@ -1,14 +1,19 @@
 #include "mini_oss/http_server.h"
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <filesystem>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <netinet/in.h>
+#include <optional>
 #include <queue>
 #include <sstream>
 #include <sys/epoll.h>
@@ -25,7 +30,9 @@ constexpr int kMaxEvents = 1024;
 constexpr std::uint64_t kWakeupValue = 1;
 constexpr int kBufferSize = 4096;
 constexpr std::size_t kMaxHeaderSize = 16 * 1024;
-constexpr std::size_t kMaxRequestSize = 10 * 1024 * 1024;
+constexpr std::size_t kDefaultMaxRequestSize = 10 * 1024 * 1024;
+constexpr std::size_t kDefaultMaxUploadSize = 128 * 1024 * 1024;
+constexpr std::size_t kDefaultStreamUploadThreshold = 1024 * 1024;
 
 std::string socketError(const char* operation)
 {
@@ -40,18 +47,54 @@ std::uint64_t elapsedMs(std::chrono::steady_clock::time_point started_at)
             .count());
 }
 
+std::optional<std::uint64_t> parseContentLength(const HttpRequest& request, std::string& error)
+{
+    const auto it = request.headers.find("content-length");
+    if (it == request.headers.end()) {
+        return 0;
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    const auto parsed = std::strtoull(it->second.c_str(), &end, 10);
+    if (errno != 0 || end == it->second.c_str() || *end != '\0') {
+        error = "invalid Content-Length";
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(parsed);
+}
+
+void cleanupTemporaryRequestBody(const HttpRequest& request)
+{
+    if (request.temporary_body_file && !request.body_file_path.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove(request.body_file_path, ignored);
+    }
+}
+
 } // namespace
 
 HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
                        std::filesystem::path storage_dir, Logger& logger,
-                       std::uint64_t slow_request_ms, std::string auth_token)
+                       std::uint64_t slow_request_ms, std::string auth_token,
+                       std::size_t max_request_bytes, std::size_t max_upload_bytes,
+                       std::size_t stream_upload_threshold_bytes)
     : port_(port)
     , logger_(logger)
     , slow_request_ms_(slow_request_ms)
     , auth_token_(std::move(auth_token))
+    , upload_tmp_dir_(storage_dir / "tmp_uploads")
+    , max_request_bytes_(max_request_bytes == 0 ? kDefaultMaxRequestSize : max_request_bytes)
+    , max_upload_bytes_(max_upload_bytes == 0 ? kDefaultMaxUploadSize : max_upload_bytes)
+    , stream_upload_threshold_bytes_(
+          stream_upload_threshold_bytes == 0 ? 0 : stream_upload_threshold_bytes)
     , object_store_(std::move(storage_dir))
     , thread_pool_(worker_threads)
 {
+    if (stream_upload_threshold_bytes_ > max_upload_bytes_) {
+        stream_upload_threshold_bytes_ = max_upload_bytes_;
+    }
+
     router_.addRoute(HttpMethod::Get, "/health", [](const HttpRequest&) {
         return HttpResponse::json(200, "OK", "{\"status\":\"ok\"}\n");
     });
@@ -83,6 +126,13 @@ HttpServer::~HttpServer()
 
 bool HttpServer::start()
 {
+    std::error_code ec;
+    std::filesystem::create_directories(upload_tmp_dir_, ec);
+    if (ec) {
+        logServerError("cannot create upload temp directory: " + ec.message());
+        return false;
+    }
+
     listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
         logServerError(socketError("socket"));
@@ -192,7 +242,8 @@ void HttpServer::run(const std::function<bool()>& keep_running)
 
 void HttpServer::stop()
 {
-    for (const auto& item : clients_) {
+    for (auto& item : clients_) {
+        cleanupClientUpload(item.second);
         ::close(item.first);
     }
     clients_.clear();
@@ -246,8 +297,11 @@ void HttpServer::acceptClients()
         std::ostringstream remote_addr;
         remote_addr << (remote == nullptr ? "unknown" : remote) << ':' << ntohs(client_addr.sin_port);
 
-        clients_[client_fd] =
-            ClientState {{}, remote_addr.str(), std::chrono::steady_clock::now(), next_generation_++, false};
+        ClientState state;
+        state.remote_addr = remote_addr.str();
+        state.started_at = std::chrono::steady_clock::now();
+        state.generation = next_generation_++;
+        clients_.emplace(client_fd, std::move(state));
         metrics_.connectionOpened();
     }
 }
@@ -268,33 +322,182 @@ void HttpServer::handleClientRead(int client_fd)
     }
 
     char buffer[kBufferSize];
-    auto& request = client_it->second.buffer;
+    auto& state = client_it->second;
 
     while (true) {
         const ssize_t n = ::recv(client_fd, buffer, sizeof(buffer), 0);
         if (n > 0) {
-            request.append(buffer, static_cast<std::size_t>(n));
-            const auto header_end = request.find("\r\n\r\n");
-            if (header_end == std::string::npos && request.size() > kMaxHeaderSize) {
-                const auto response = HttpResponse::text(431, "Request Header Fields Too Large",
-                                                         "request header too large\n");
-                const auto serialized = response.serialize();
-                const auto duration_ms = elapsedMs(client_it->second.started_at);
-                sendAll(client_fd, serialized);
-                logAccess(client_it->second.remote_addr, "-", "-", response.statusCode(), request.size(),
-                          serialized.size(), duration_ms);
-                closeClient(client_fd);
+            if (state.streaming_upload) {
+                if (!writeStreamingUpload(state, buffer, static_cast<std::size_t>(n))) {
+                    sendImmediateResponse(client_fd,
+                                          HttpResponse::text(500, "Internal Server Error",
+                                                             "cannot write upload temp file\n"),
+                                          httpMethodName(state.header_request.method),
+                                          state.header_request.path, state.request_bytes);
+                    return;
+                }
+                if (state.received_body_bytes >= state.content_length) {
+                    submitStreamingUpload(client_fd, state);
+                    return;
+                }
+                continue;
+            }
+
+            state.buffer.append(buffer, static_cast<std::size_t>(n));
+            const auto header_end = state.buffer.find("\r\n\r\n");
+            if (header_end == std::string::npos) {
+                if (state.buffer.size() > kMaxHeaderSize) {
+                    sendImmediateResponse(client_fd,
+                                          HttpResponse::text(431, "Request Header Fields Too Large",
+                                                             "request header too large\n"),
+                                          "-", "-", state.buffer.size());
+                    return;
+                }
+                if (state.buffer.size() > max_request_bytes_) {
+                    sendImmediateResponse(client_fd,
+                                          HttpResponse::text(413, "Payload Too Large",
+                                                             "request body too large\n"),
+                                          "-", "-", state.buffer.size());
+                    return;
+                }
+                continue;
+            }
+
+            const std::size_t body_begin = header_end + 4;
+            if (!state.header_parsed) {
+                const auto head_result = parseHttpRequestHead(state.buffer.substr(0, body_begin));
+                if (!head_result.complete || !head_result.ok) {
+                    const std::string error = head_result.error.empty() ? "invalid request" : head_result.error;
+                    sendImmediateResponse(client_fd, HttpResponse::badRequest(error), "-", "-",
+                                          state.buffer.size());
+                    return;
+                }
+
+                std::string length_error;
+                const auto content_length = parseContentLength(head_result.request, length_error);
+                if (!content_length.has_value()) {
+                    sendImmediateResponse(client_fd, HttpResponse::badRequest(length_error),
+                                          httpMethodName(head_result.request.method),
+                                          head_result.request.path, state.buffer.size());
+                    return;
+                }
+
+                if (shouldStreamUpload(head_result.request, content_length.value())) {
+                    if (!isAuthorized(head_result.request)) {
+                        sendImmediateResponse(client_fd, HttpResponse::unauthorized(),
+                                              httpMethodName(head_result.request.method),
+                                              head_result.request.path, body_begin);
+                        return;
+                    }
+                    if (content_length.value() > max_upload_bytes_) {
+                        sendImmediateResponse(client_fd,
+                                              HttpResponse::text(413, "Payload Too Large",
+                                                                 "upload body too large\n"),
+                                              httpMethodName(head_result.request.method),
+                                              head_result.request.path, body_begin);
+                        return;
+                    }
+
+                    const std::uint64_t request_bytes = static_cast<std::uint64_t>(body_begin)
+                        + content_length.value();
+                    if (request_bytes > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+                        sendImmediateResponse(client_fd,
+                                              HttpResponse::text(413, "Payload Too Large",
+                                                                 "upload body too large\n"),
+                                              httpMethodName(head_result.request.method),
+                                              head_result.request.path, body_begin);
+                        return;
+                    }
+
+                    if (!beginStreamingUpload(client_fd, state, head_result.request,
+                                              content_length.value(),
+                                              static_cast<std::size_t>(request_bytes))) {
+                        sendImmediateResponse(client_fd,
+                                              HttpResponse::text(500, "Internal Server Error",
+                                                                 "cannot create upload temp file\n"),
+                                              httpMethodName(head_result.request.method),
+                                              head_result.request.path, body_begin);
+                        return;
+                    }
+
+                    const auto available = state.buffer.size() > body_begin
+                        ? state.buffer.size() - body_begin
+                        : 0;
+                    const auto to_write = static_cast<std::size_t>(
+                        std::min<std::uint64_t>(available, state.content_length));
+                    if (!writeStreamingUpload(state, state.buffer.data() + body_begin, to_write)) {
+                        sendImmediateResponse(client_fd,
+                                              HttpResponse::text(500, "Internal Server Error",
+                                                                 "cannot write upload temp file\n"),
+                                              httpMethodName(state.header_request.method),
+                                              state.header_request.path, state.request_bytes);
+                        return;
+                    }
+                    state.buffer.clear();
+                    if (state.received_body_bytes >= state.content_length) {
+                        submitStreamingUpload(client_fd, state);
+                        return;
+                    }
+                    continue;
+                }
+
+                const std::uint64_t request_bytes = static_cast<std::uint64_t>(body_begin)
+                    + content_length.value();
+                if (request_bytes > max_request_bytes_) {
+                    sendImmediateResponse(client_fd,
+                                          HttpResponse::text(413, "Payload Too Large",
+                                                             "request body too large\n"),
+                                          httpMethodName(head_result.request.method),
+                                          head_result.request.path, body_begin);
+                    return;
+                }
+                if (request_bytes > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+                    sendImmediateResponse(client_fd,
+                                          HttpResponse::text(413, "Payload Too Large",
+                                                             "request body too large\n"),
+                                          httpMethodName(head_result.request.method),
+                                          head_result.request.path, body_begin);
+                    return;
+                }
+
+                state.header_parsed = true;
+                state.content_length = content_length.value();
+                state.request_bytes = static_cast<std::size_t>(request_bytes);
+            }
+
+            if (state.buffer.size() > max_request_bytes_) {
+                sendImmediateResponse(client_fd,
+                                      HttpResponse::text(413, "Payload Too Large",
+                                                         "request body too large\n"),
+                                      "-", "-", state.buffer.size());
                 return;
             }
-            if (request.size() > kMaxRequestSize) {
-                const auto response = HttpResponse::text(413, "Payload Too Large",
-                                                         "request body too large\n");
-                const auto serialized = response.serialize();
-                const auto duration_ms = elapsedMs(client_it->second.started_at);
-                sendAll(client_fd, serialized);
-                logAccess(client_it->second.remote_addr, "-", "-", response.statusCode(), request.size(),
-                          serialized.size(), duration_ms);
-                closeClient(client_fd);
+            if (state.buffer.size() >= state.request_bytes) {
+                auto parse_result = parseHttpRequest(state.buffer);
+                if (!parse_result.complete || !parse_result.ok) {
+                    const std::string error = parse_result.error.empty() ? "invalid request" : parse_result.error;
+                    sendImmediateResponse(client_fd, HttpResponse::badRequest(error), "-", "-",
+                                          state.buffer.size());
+                    return;
+                }
+
+                const std::uint64_t generation = state.generation;
+                const std::string remote_addr = state.remote_addr;
+                const auto started_at = state.started_at;
+                const auto request_bytes = state.request_bytes;
+                state.processing = true;
+
+                epoll_event event {};
+                event.events = EPOLLRDHUP;
+                event.data.fd = client_fd;
+                if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, client_fd, &event) < 0) {
+                    logServerError(socketError("epoll_ctl disable read"));
+                    closeClient(client_fd);
+                    return;
+                }
+
+                submitRequest(client_fd, generation, remote_addr, started_at,
+                              std::move(parse_result.request), request_bytes);
                 return;
             }
             continue;
@@ -313,64 +516,37 @@ void HttpServer::handleClientRead(int client_fd)
         closeClient(client_fd);
         return;
     }
-
-    const auto parse_result = parseHttpRequest(request);
-    if (!parse_result.complete) {
-        return;
-    }
-
-    const std::uint64_t generation = client_it->second.generation;
-    const std::string remote_addr = client_it->second.remote_addr;
-    const auto started_at = client_it->second.started_at;
-    client_it->second.processing = true;
-
-    epoll_event event {};
-    event.events = EPOLLRDHUP;
-    event.data.fd = client_fd;
-    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, client_fd, &event) < 0) {
-        logServerError(socketError("epoll_ctl disable read"));
-        closeClient(client_fd);
-        return;
-    }
-
-    submitRequest(client_fd, generation, remote_addr, started_at, std::move(request));
 }
 
 void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::string remote_addr,
                                std::chrono::steady_clock::time_point started_at,
-                               std::string raw_request)
+                               HttpRequest request, std::size_t request_bytes)
 {
     const bool queued = thread_pool_.enqueue([this, client_fd, generation, remote_addr = std::move(remote_addr),
-                                              started_at, raw_request = std::move(raw_request)] {
-        const auto parse_result = parseHttpRequest(raw_request);
+                                              started_at, request = std::move(request), request_bytes]() mutable {
         HttpResponse http_response = HttpResponse::badRequest("invalid request");
-        std::string method = "-";
-        std::string path = "-";
-        if (!parse_result.complete || !parse_result.ok) {
-            const std::string error = parse_result.error.empty() ? "invalid request" : parse_result.error;
-            http_response = HttpResponse::badRequest(error);
+        const std::string method = httpMethodName(request.method);
+        const std::string path = request.path;
+        if (!isAuthorized(request)) {
+            http_response = HttpResponse::unauthorized();
         } else {
-            method = httpMethodName(parse_result.request.method);
-            path = parse_result.request.path;
-            if (!isAuthorized(parse_result.request)) {
-                http_response = HttpResponse::unauthorized();
-            } else {
-                http_response = router_.route(parse_result.request);
-            }
+            http_response = router_.route(request);
         }
+        cleanupTemporaryRequestBody(request);
 
         const auto serialized = http_response.serialize();
         const auto duration_ms = elapsedMs(started_at);
-        logAccess(remote_addr, method, path, http_response.statusCode(), raw_request.size(),
+        logAccess(remote_addr, method, path, http_response.statusCode(), request_bytes,
                   serialized.size(), duration_ms);
         enqueueResponse(client_fd, generation, std::move(serialized));
     });
 
     if (!queued) {
+        cleanupTemporaryRequestBody(request);
         const auto response = HttpResponse::text(503, "Service Unavailable", "server shutting down\n");
         const auto serialized = response.serialize();
-        logAccess(remote_addr, "-", "-", response.statusCode(), 0, serialized.size(),
-                  elapsedMs(started_at));
+        logAccess(remote_addr, httpMethodName(request.method), request.path, response.statusCode(),
+                  request_bytes, serialized.size(), elapsedMs(started_at));
         enqueueResponse(client_fd, generation, serialized);
     }
 }
@@ -416,7 +592,10 @@ void HttpServer::closeClient(int client_fd)
     if (epoll_fd_ >= 0) {
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
     }
-    if (clients_.erase(client_fd) > 0) {
+    const auto it = clients_.find(client_fd);
+    if (it != clients_.end()) {
+        cleanupClientUpload(it->second);
+        clients_.erase(it);
         metrics_.connectionClosed();
     }
     ::close(client_fd);
@@ -426,6 +605,143 @@ void HttpServer::logServerError(const std::string& message)
 {
     std::cerr << message << '\n';
     logger_.error(message);
+}
+
+void HttpServer::sendImmediateResponse(int client_fd, const HttpResponse& response,
+                                       const std::string& method, const std::string& path,
+                                       std::size_t request_bytes)
+{
+    const auto client_it = clients_.find(client_fd);
+    if (client_it == clients_.end()) {
+        return;
+    }
+
+    const auto serialized = response.serialize();
+    const auto duration_ms = elapsedMs(client_it->second.started_at);
+    sendAll(client_fd, serialized);
+    logAccess(client_it->second.remote_addr, method, path, response.statusCode(), request_bytes,
+              serialized.size(), duration_ms);
+    closeClient(client_fd);
+}
+
+bool HttpServer::shouldStreamUpload(const HttpRequest& request, std::uint64_t content_length) const
+{
+    return request.method == HttpMethod::Post && request.path == "/objects"
+        && content_length > stream_upload_threshold_bytes_;
+}
+
+bool HttpServer::beginStreamingUpload(int client_fd, ClientState& state, HttpRequest request,
+                                      std::uint64_t content_length, std::size_t request_bytes)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(upload_tmp_dir_, ec);
+    if (ec) {
+        logServerError("cannot create upload temp directory: " + ec.message());
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const auto filename = "upload_" + std::to_string(now) + "_"
+            + std::to_string(client_fd) + "_" + std::to_string(attempt) + ".tmp";
+        const auto path = upload_tmp_dir_ / filename;
+        const int fd = ::open(path.string().c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (fd >= 0) {
+            state.header_parsed = true;
+            state.streaming_upload = true;
+            state.content_length = content_length;
+            state.received_body_bytes = 0;
+            state.request_bytes = request_bytes;
+            state.header_request = std::move(request);
+            state.temp_upload_path = path;
+            state.temp_upload_fd = fd;
+            state.owns_temp_upload = true;
+            return true;
+        }
+        if (errno != EEXIST) {
+            logServerError(socketError("open upload temp file"));
+            return false;
+        }
+    }
+
+    logServerError("cannot allocate unique upload temp file");
+    return false;
+}
+
+bool HttpServer::writeStreamingUpload(ClientState& state, const char* data, std::size_t size)
+{
+    if (size == 0) {
+        return true;
+    }
+    if (state.temp_upload_fd < 0 || state.received_body_bytes >= state.content_length) {
+        return true;
+    }
+
+    const auto remaining = state.content_length - state.received_body_bytes;
+    std::size_t to_write = static_cast<std::size_t>(
+        std::min<std::uint64_t>(remaining, static_cast<std::uint64_t>(size)));
+    const char* cursor = data;
+    while (to_write > 0) {
+        const ssize_t n = ::write(state.temp_upload_fd, cursor, to_write);
+        if (n > 0) {
+            cursor += n;
+            to_write -= static_cast<std::size_t>(n);
+            state.received_body_bytes += static_cast<std::uint64_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        logServerError(socketError("write upload temp file"));
+        return false;
+    }
+    return true;
+}
+
+void HttpServer::cleanupClientUpload(ClientState& state)
+{
+    if (state.temp_upload_fd >= 0) {
+        ::close(state.temp_upload_fd);
+        state.temp_upload_fd = -1;
+    }
+    if (state.owns_temp_upload && !state.temp_upload_path.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove(state.temp_upload_path, ignored);
+    }
+    state.owns_temp_upload = false;
+}
+
+void HttpServer::submitStreamingUpload(int client_fd, ClientState& state)
+{
+    if (state.temp_upload_fd >= 0) {
+        ::close(state.temp_upload_fd);
+        state.temp_upload_fd = -1;
+    }
+
+    HttpRequest request = std::move(state.header_request);
+    request.body_in_file = true;
+    request.temporary_body_file = true;
+    request.body_file_path = state.temp_upload_path;
+    request.body_size = state.received_body_bytes;
+
+    const std::uint64_t generation = state.generation;
+    const std::string remote_addr = state.remote_addr;
+    const auto started_at = state.started_at;
+    const auto request_bytes = state.request_bytes;
+    state.processing = true;
+    state.owns_temp_upload = false;
+
+    epoll_event event {};
+    event.events = EPOLLRDHUP;
+    event.data.fd = client_fd;
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, client_fd, &event) < 0) {
+        cleanupTemporaryRequestBody(request);
+        logServerError(socketError("epoll_ctl disable read"));
+        closeClient(client_fd);
+        return;
+    }
+
+    submitRequest(client_fd, generation, remote_addr, started_at, std::move(request), request_bytes);
 }
 
 bool HttpServer::requiresAuth(const HttpRequest& request) const

@@ -2,9 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <utility>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace mini_oss {
@@ -23,6 +24,10 @@ struct HttpRequest {
     std::string version;
     std::unordered_map<std::string, std::string> headers;
     std::string body;
+    std::filesystem::path body_file_path;
+    std::uint64_t body_size = 0;
+    bool body_in_file = false;
+    bool temporary_body_file = false;
 };
 
 class HttpResponse {
@@ -62,6 +67,7 @@ struct HttpParseResult {
 
 HttpMethod parseHttpMethod(const std::string& method);
 std::string httpMethodName(HttpMethod method);
+HttpParseResult parseHttpRequestHead(const std::string& raw);
 HttpParseResult parseHttpRequest(const std::string& raw);
 
 } // namespace mini_oss

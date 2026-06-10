@@ -25,6 +25,8 @@ Linux File System / SQLite / Redis(optional)
 - Use epoll to monitor readable/writable events.
 - Manage connection lifecycle.
 - The epoll event loop accepts connections and reads complete HTTP requests.
+- For large `POST /objects` bodies, the event loop parses headers first and streams the body into `storage/tmp_uploads` instead of keeping the whole body in memory.
+- Completed file-backed upload requests pass a temporary file path to the worker, while small requests keep the existing in-memory body path.
 - Completed requests are dispatched to the worker thread pool.
 - Worker responses wake the event loop through eventfd, and the current version closes each HTTP connection after sending the response.
 
@@ -51,6 +53,9 @@ Linux File System / SQLite / Redis(optional)
 - Support instant upload by creating new metadata for an existing SHA-256 without resending the file body.
 - Support single-range object download with `206 Partial Content`, `Content-Range`, and `Accept-Ranges`.
 - Delete metadata first and remove the physical file only when no remaining object references point to it.
+- Large upload processing uses temporary files, incremental SHA-256 calculation, deduplication lookup, and atomic-style rename into the final object path.
+- Duplicate large uploads remove the temporary body file after creating a new metadata alias.
+- Failed or disconnected uploads clean temporary files through connection lifecycle cleanup.
 - Current MVP stores object files under `storage/objects` and persists metadata through SQLite.
 
 ### Metadata Store
@@ -71,7 +76,8 @@ Linux File System / SQLite / Redis(optional)
 - Load simple INI-style config files.
 - Support `server`, `storage`, and `logging` sections.
 - Command-line options override config-file values.
-- Current configurable values: port, worker threads, storage directory, log directory, slow request threshold.
+- Current configurable values: port, worker threads, storage directory, log directory, slow request threshold,
+  in-memory request limit, upload size limit, stream-upload threshold, and auth token.
 
 ### Logging
 

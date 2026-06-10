@@ -35,7 +35,8 @@ void printUsage()
 {
     std::cout << "Usage: mini_oss [--config config.ini] [--port 8080] [--threads 4] "
                  "[--storage-dir storage] [--log-dir logs] [--slow-request-ms 200] "
-                 "[--auth-token token] [--version]\n";
+                 "[--max-request-bytes bytes] [--max-upload-bytes bytes] "
+                 "[--stream-upload-threshold-bytes bytes] [--auth-token token] [--version]\n";
 }
 }
 
@@ -48,6 +49,9 @@ int main(int argc, char* argv[])
     std::optional<std::filesystem::path> storage_dir_override;
     std::optional<std::filesystem::path> log_dir_override;
     std::optional<std::uint64_t> slow_request_ms_override;
+    std::optional<std::size_t> max_request_bytes_override;
+    std::optional<std::size_t> max_upload_bytes_override;
+    std::optional<std::size_t> stream_upload_threshold_bytes_override;
     std::optional<std::string> auth_token_override;
 
     for (int i = 1; i < argc; ++i) {
@@ -80,6 +84,27 @@ int main(int argc, char* argv[])
                 return 1;
             }
             slow_request_ms_override = value;
+        } else if (arg == "--max-request-bytes" && i + 1 < argc) {
+            std::uint64_t value = 0;
+            if (!parseUnsigned(argv[++i], value) || value == 0) {
+                std::cerr << "Invalid max request bytes\n";
+                return 1;
+            }
+            max_request_bytes_override = static_cast<std::size_t>(value);
+        } else if (arg == "--max-upload-bytes" && i + 1 < argc) {
+            std::uint64_t value = 0;
+            if (!parseUnsigned(argv[++i], value) || value == 0) {
+                std::cerr << "Invalid max upload bytes\n";
+                return 1;
+            }
+            max_upload_bytes_override = static_cast<std::size_t>(value);
+        } else if (arg == "--stream-upload-threshold-bytes" && i + 1 < argc) {
+            std::uint64_t value = 0;
+            if (!parseUnsigned(argv[++i], value)) {
+                std::cerr << "Invalid stream upload threshold bytes\n";
+                return 1;
+            }
+            stream_upload_threshold_bytes_override = static_cast<std::size_t>(value);
         } else if (arg == "--auth-token" && i + 1 < argc) {
             auth_token_override = argv[++i];
         } else if (arg == "--version") {
@@ -122,6 +147,15 @@ int main(int argc, char* argv[])
     if (slow_request_ms_override.has_value()) {
         config.slow_request_ms = slow_request_ms_override.value();
     }
+    if (max_request_bytes_override.has_value()) {
+        config.max_request_bytes = max_request_bytes_override.value();
+    }
+    if (max_upload_bytes_override.has_value()) {
+        config.max_upload_bytes = max_upload_bytes_override.value();
+    }
+    if (stream_upload_threshold_bytes_override.has_value()) {
+        config.stream_upload_threshold_bytes = stream_upload_threshold_bytes_override.value();
+    }
     if (auth_token_override.has_value()) {
         config.auth_token = auth_token_override.value();
     }
@@ -143,7 +177,9 @@ int main(int argc, char* argv[])
     std::signal(SIGTERM, handleSignal);
 
     mini_oss::HttpServer server(config.port, config.worker_threads, config.storage_dir, logger,
-                                config.slow_request_ms, config.auth_token);
+                                config.slow_request_ms, config.auth_token,
+                                config.max_request_bytes, config.max_upload_bytes,
+                                config.stream_upload_threshold_bytes);
     if (!server.start()) {
         return 1;
     }

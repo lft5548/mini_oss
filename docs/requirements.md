@@ -51,12 +51,13 @@ Current MVP status:
 - `/metrics` runtime monitoring endpoint: done.
 - Token authentication for object APIs: done.
 - Benchmark script and ab/wrk report: done.
+- Large upload streaming with temporary files and incremental SHA-256: done.
 
 Known limitations before the next phase:
 
 - Logging is synchronous file append; later versions can add async logging.
 - Metrics are in-process counters and reset after service restart.
-- File upload currently accepts the full HTTP body in memory.
+- Small requests are still buffered in memory; large `POST /objects` uploads use a file-backed streaming path.
 - Token auth is static shared-token auth; later versions can add users, roles, or signed URLs.
 - Deduplication is single-node metadata deduplication; later versions can add content-addressed storage layout and garbage collection jobs.
 - No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.

@@ -79,10 +79,20 @@ def http_request(
     return status, body_bytes
 
 
-def write_config(path: Path, port: int, threads: int) -> None:
+def write_config(
+    path: Path,
+    port: int,
+    threads: int,
+    max_request_bytes: int,
+    max_upload_bytes: int,
+    stream_upload_threshold_bytes: int,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"[server]\nport = {port}\nthreads = {threads}\nslow_request_ms = 100\n\n"
+        f"[server]\nport = {port}\nthreads = {threads}\nslow_request_ms = 100\n"
+        f"max_request_bytes = {max_request_bytes}\n"
+        f"max_upload_bytes = {max_upload_bytes}\n"
+        f"stream_upload_threshold_bytes = {stream_upload_threshold_bytes}\n\n"
         "[storage]\ndir = tmp/benchmark_storage\n\n"
         "[logging]\ndir = tmp/benchmark_logs\n\n"
         f"[auth]\ntoken = {AUTH_TOKEN}\n",
@@ -178,7 +188,7 @@ def parse_wrk_latency(pattern: str, text: str) -> float:
 
 
 def parse_wrk_percentile(percent: int, text: str) -> float:
-    return parse_wrk_latency(rf"^\s*{percent}%\s+([0-9.]+)(us|ms|s)$", text)
+    return parse_wrk_latency(rf"^\s*{percent}%\s+([0-9.]+)\s*(us|ms|s)$", text)
 
 
 def parse_wrk_socket_errors(text: str) -> int:
@@ -255,6 +265,23 @@ def wrk_base(args: argparse.Namespace) -> list[str]:
         str(args.wrk_connections),
         "-d",
         args.wrk_duration,
+        "--timeout",
+        args.wrk_timeout,
+        "--latency",
+    ]
+
+
+def wrk_download_base(args: argparse.Namespace) -> list[str]:
+    return [
+        "wrk",
+        "-t",
+        str(min(args.wrk_threads, 1)),
+        "-c",
+        str(min(args.wrk_connections, 4)),
+        "-d",
+        args.wrk_duration,
+        "--timeout",
+        args.wrk_timeout,
         "--latency",
     ]
 
@@ -268,6 +295,8 @@ def wrk_range_base(args: argparse.Namespace) -> list[str]:
         str(min(args.wrk_connections, 4)),
         "-d",
         args.wrk_duration,
+        "--timeout",
+        args.wrk_timeout,
         "--latency",
     ]
 
@@ -347,9 +376,13 @@ def render_report(
         f"- Worker threads: {args.threads}",
         f"- ab read requests/concurrency: {args.read_requests}/{args.concurrency}",
         f"- ab write requests/concurrency: {args.write_requests}/{args.write_concurrency}",
-        f"- wrk threads/connections/duration: {args.wrk_threads}/{args.wrk_connections}/{args.wrk_duration}",
-        f"- wrk Range threads/connections/duration: {min(args.wrk_threads, 1)}/{min(args.wrk_connections, 4)}/{args.wrk_duration}",
+        f"- wrk threads/connections/duration/timeout: {args.wrk_threads}/{args.wrk_connections}/{args.wrk_duration}/{args.wrk_timeout}",
+        f"- wrk full-download threads/connections/duration/timeout: {min(args.wrk_threads, 1)}/{min(args.wrk_connections, 4)}/{args.wrk_duration}/{args.wrk_timeout}",
+        f"- wrk Range threads/connections/duration/timeout: {min(args.wrk_threads, 1)}/{min(args.wrk_connections, 4)}/{args.wrk_duration}/{args.wrk_timeout}",
         f"- Seed object size: {args.object_size} bytes",
+        f"- Max request bytes: {args.max_request_bytes}",
+        f"- Max upload bytes: {args.max_upload_bytes}",
+        f"- Stream upload threshold bytes: {args.stream_upload_threshold_bytes}",
         "",
         "## Summary",
         "",
@@ -402,6 +435,7 @@ def render_report(
             "- `GET /objects/{id}` includes metadata lookup and object file read path.",
             "- `POST /objects/instant` validates SHA-256 lookup and SQLite metadata insertion without sending file content.",
             "- `POST /objects` sends an object body; repeated same-body requests also exercise the deduplication path.",
+            "- When `object_size` is larger than `stream_upload_threshold_bytes`, upload cases also exercise the temporary-file streaming path.",
             "- `ab` provides fixed request-count results; `wrk` provides fixed-duration latency distribution and throughput.",
             "",
             "## Limitations",
@@ -409,7 +443,8 @@ def render_report(
             "- This is a local WSL loopback benchmark; use it for regression comparison, not production capacity claims.",
             "- `ab` and `wrk` use different client models, so numbers should be compared within the same tool.",
             "- Repeated upload benchmarking uses the same body for each request, so deduplication affects write-path results.",
-            "- Later stages can add longer duration tests, mixed traffic Lua scripts, flamegraphs, and memory profiling.",
+            "- Large full-object downloads use a lower wrk connection count because the current server sends responses synchronously after worker completion.",
+            "- Later stages can add EPOLLOUT output buffers, longer duration tests, mixed traffic Lua scripts, flamegraphs, and memory profiling.",
             "",
             "## Raw Output",
             "",
@@ -455,7 +490,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wrk-threads", type=int, default=2)
     parser.add_argument("--wrk-connections", type=int, default=12)
     parser.add_argument("--wrk-duration", default="3s")
-    parser.add_argument("--object-size", type=int, default=4096)
+    parser.add_argument("--wrk-timeout", default="10s")
+    parser.add_argument("--object-size", type=int, default=65536)
+    parser.add_argument("--max-request-bytes", type=int, default=4096)
+    parser.add_argument("--max-upload-bytes", type=int, default=2 * 1024 * 1024)
+    parser.add_argument("--stream-upload-threshold-bytes", type=int, default=1024)
     parser.add_argument("--report", type=Path, default=Path("docs/benchmark.md"))
     return parser.parse_args()
 
@@ -480,10 +519,20 @@ def main() -> int:
     shutil.rmtree(storage_dir, ignore_errors=True)
     shutil.rmtree(log_dir, ignore_errors=True)
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.object_size > args.max_upload_bytes:
+        print("object size must not exceed max upload bytes", file=sys.stderr)
+        return 1
     upload_body = (b"mini-oss-upload-body-" * ((args.object_size // 21) + 1))[: args.object_size]
     upload_body_path.write_bytes(upload_body)
     empty_body_path.write_bytes(b"")
-    write_config(config_path, args.port, args.threads)
+    write_config(
+        config_path,
+        args.port,
+        args.threads,
+        args.max_request_bytes,
+        args.max_upload_bytes,
+        args.stream_upload_threshold_bytes,
+    )
 
     proc = start_server(config_path, args.threads)
     server_stdout = ""
@@ -562,8 +611,8 @@ def main() -> int:
             ),
             run_wrk_case(
                 "GET /objects/{id}",
-                wrk_base(args) + ["-H", AUTH_HEADER, f"{url_base}/objects/{object_id}"],
-                "duration metadata lookup + file read",
+                wrk_download_base(args) + ["-H", AUTH_HEADER, f"{url_base}/objects/{object_id}"],
+                "duration metadata lookup + full object read",
             ),
             run_wrk_case(
                 "GET /objects/{id} Range",
