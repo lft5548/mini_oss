@@ -8,6 +8,7 @@ project(mini_oss
 
 find_package(OpenSSL REQUIRED)
 find_package(SQLite3 REQUIRED)
+find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +21,7 @@ add_executable(mini_oss
     src/metadata_store.cpp
     src/object_store.cpp
     src/router.cpp
+    src/thread_pool.cpp
 )
 
 target_include_directories(mini_oss PRIVATE
@@ -35,4 +37,5 @@ target_compile_options(mini_oss PRIVATE
 target_link_libraries(mini_oss PRIVATE
     OpenSSL::Crypto
     SQLite::SQLite3
+    Threads::Threads
 )

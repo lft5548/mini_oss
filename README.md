@@ -54,6 +54,7 @@ The current MVP supports:
 - `DELETE /objects/{id}` delete an object
 - Linux socket + non-blocking listening socket
 - epoll event loop
+- worker thread pool for HTTP request handling
 - SHA-256 object integrity metadata
 - SQLite metadata persistence under `storage/metadata.db`
 
@@ -69,6 +70,7 @@ Expected checks:
 - `/not-found` returns `HTTP/1.1 404 Not Found`
 - object upload/list/download/delete flow passes
 - object metadata survives a service restart
+- concurrent object uploads return unique persisted object IDs
 
 ## Example Object APIs
 

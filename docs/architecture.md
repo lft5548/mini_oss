@@ -24,18 +24,22 @@ Linux File System / SQLite / Redis(optional)
 - Set socket to non-blocking mode.
 - Use epoll to monitor readable/writable events.
 - Manage connection lifecycle.
-- Current MVP uses a single epoll event loop and closes each HTTP connection after sending the response.
+- The epoll event loop accepts connections and reads complete HTTP requests.
+- Completed requests are dispatched to the worker thread pool.
+- Worker responses wake the event loop through eventfd, and the current version closes each HTTP connection after sending the response.
 
 ### HTTP
 
 - Parse request line, headers, and body.
 - Build HTTP responses.
 - Route URL and method to service handlers.
+- Current implementation supports one request per connection.
 
 ### Thread Pool
 
-- Execute request handling tasks.
-- Separate IO event loop from CPU/file/database work.
+- Execute HTTP routing, object storage, and metadata tasks outside the epoll loop.
+- Keep the IO event loop responsive while file and SQLite operations are running.
+- Use a fixed worker count derived from hardware concurrency by default, with `--threads` for manual tuning.
 
 ### Object Store
 

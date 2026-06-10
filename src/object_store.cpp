@@ -3,7 +3,9 @@
 #include <chrono>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 #include <openssl/sha.h>
+#include <shared_mutex>
 #include <sstream>
 #include <utility>
 
@@ -72,6 +74,8 @@ ObjectStore::ObjectStore(std::filesystem::path root_dir)
 
 HttpResponse ObjectStore::createObject(const HttpRequest& request)
 {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+
     if (request.body.empty()) {
         return HttpResponse::badRequest("empty object body");
     }
@@ -113,6 +117,8 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
 
 HttpResponse ObjectStore::listObjects(const HttpRequest&)
 {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+
     std::string error;
     const auto objects = metadata_store_.listObjects(error);
     if (!error.empty()) {
@@ -135,6 +141,8 @@ HttpResponse ObjectStore::listObjects(const HttpRequest&)
 
 HttpResponse ObjectStore::getObject(const HttpRequest& request)
 {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+
     const std::string id = extractObjectId(request.path);
     if (id.empty()) {
         return HttpResponse::badRequest("missing object id");
@@ -162,6 +170,8 @@ HttpResponse ObjectStore::getObject(const HttpRequest& request)
 
 HttpResponse ObjectStore::deleteObject(const HttpRequest& request)
 {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+
     const std::string id = extractObjectId(request.path);
     if (id.empty()) {
         return HttpResponse::badRequest("missing object id");

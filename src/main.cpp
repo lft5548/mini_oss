@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -20,6 +21,7 @@ int main(int argc, char* argv[])
 {
     std::string config_path = "config.ini";
     std::uint16_t port = 8080;
+    std::size_t worker_threads = 0;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--config" && i + 1 < argc) {
@@ -31,11 +33,18 @@ int main(int argc, char* argv[])
                 return 1;
             }
             port = static_cast<std::uint16_t>(value);
+        } else if (arg == "--threads" && i + 1 < argc) {
+            const int value = std::stoi(argv[++i]);
+            if (value <= 0) {
+                std::cerr << "Invalid thread count: " << value << '\n';
+                return 1;
+            }
+            worker_threads = static_cast<std::size_t>(value);
         } else if (arg == "--version") {
             std::cout << "mini_oss " << MINI_OSS_VERSION << '\n';
             return 0;
         } else if (arg == "--help") {
-            std::cout << "Usage: mini_oss [--config config.ini] [--port 8080] [--version]\n";
+            std::cout << "Usage: mini_oss [--config config.ini] [--port 8080] [--threads 4] [--version]\n";
             return 0;
         } else {
             std::cerr << "Unknown argument: " << arg << '\n';
@@ -50,7 +59,7 @@ int main(int argc, char* argv[])
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
 
-    mini_oss::HttpServer server(port);
+    mini_oss::HttpServer server(port, worker_threads);
     if (!server.start()) {
         return 1;
     }

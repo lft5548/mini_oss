@@ -4,6 +4,7 @@
 #include "mini_oss/metadata_store.h"
 
 #include <filesystem>
+#include <shared_mutex>
 #include <string>
 
 namespace mini_oss {
@@ -26,6 +27,7 @@ private:
     std::filesystem::path root_dir_;
     std::filesystem::path object_dir_;
     MetadataStore metadata_store_;
+    mutable std::shared_mutex mutex_;
 };
 
 } // namespace mini_oss

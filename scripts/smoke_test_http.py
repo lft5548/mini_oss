@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+from concurrent.futures import ThreadPoolExecutor
 import shutil
 import socket
 import subprocess
@@ -46,6 +47,18 @@ def response_body(response: str) -> str:
     return response.split("\r\n\r\n", 1)[1]
 
 
+def upload_parallel(index: int) -> str:
+    response = request(
+        "/objects",
+        method="POST",
+        body=f"parallel object {index}".encode("utf-8"),
+        headers={"X-Filename": f"parallel-{index}.txt"},
+    )
+    if "HTTP/1.1 201 Created" not in response:
+        raise RuntimeError(response)
+    return json.loads(response_body(response))["id"]
+
+
 def main() -> int:
     shutil.rmtree(Path("storage"), ignore_errors=True)
 
@@ -64,6 +77,9 @@ def main() -> int:
         )
         upload_body = json.loads(response_body(upload))
         object_id = upload_body["id"]
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            parallel_ids = list(executor.map(upload_parallel, range(8)))
+
         listing = request("/objects")
         download = request(f"/objects/{object_id}")
         stop_server(proc)
@@ -91,6 +107,8 @@ def main() -> int:
     print(listing)
     print("=== GET /objects/{id} ===")
     print(download)
+    print("=== concurrent upload ids ===")
+    print(parallel_ids)
     print("=== GET /objects after restart ===")
     print(restarted_listing)
     print("=== GET /objects/{id} after restart ===")
@@ -119,8 +137,18 @@ def main() -> int:
     if "HTTP/1.1 201 Created" not in upload or '"sha256"' not in upload:
         print("object upload failed", file=sys.stderr)
         return 1
-    if "HTTP/1.1 200 OK" not in listing or object_id not in listing:
+    if "HTTP/1.1 200 OK" not in listing:
         print("object list failed", file=sys.stderr)
+        return 1
+    listed_ids = {item["id"] for item in json.loads(response_body(listing))["objects"]}
+    if object_id not in listed_ids:
+        print("object list missed uploaded object", file=sys.stderr)
+        return 1
+    if len(set(parallel_ids)) != len(parallel_ids):
+        print("concurrent upload ids are not unique", file=sys.stderr)
+        return 1
+    if not set(parallel_ids).issubset(listed_ids):
+        print("concurrent uploaded objects missing from list", file=sys.stderr)
         return 1
     if "HTTP/1.1 200 OK" not in download or "hello mini oss" not in download:
         print("object download failed", file=sys.stderr)
@@ -142,7 +170,7 @@ def main() -> int:
 
 def start_server() -> subprocess.Popen[str]:
     proc = subprocess.Popen(
-        ["./build/mini_oss", "--port", "18080"],
+        ["./build/mini_oss", "--port", "18080", "--threads", "4"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

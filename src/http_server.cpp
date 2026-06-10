@@ -2,29 +2,35 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
+#include <mutex>
 #include <netinet/in.h>
-#include <sstream>
+#include <queue>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <utility>
 
 namespace mini_oss {
 namespace {
 
 constexpr int kBacklog = 128;
 constexpr int kMaxEvents = 1024;
+constexpr std::uint64_t kWakeupValue = 1;
 constexpr int kBufferSize = 4096;
 constexpr std::size_t kMaxHeaderSize = 16 * 1024;
 constexpr std::size_t kMaxRequestSize = 10 * 1024 * 1024;
 
 } // namespace
 
-HttpServer::HttpServer(std::uint16_t port)
+HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads)
     : port_(port)
     , object_store_("storage")
+    , thread_pool_(worker_threads)
 {
     router_.addRoute(HttpMethod::Get, "/health", [](const HttpRequest&) {
         return HttpResponse::json(200, "OK", "{\"status\":\"ok\"}\n");
@@ -45,6 +51,7 @@ HttpServer::HttpServer(std::uint16_t port)
 
 HttpServer::~HttpServer()
 {
+    thread_pool_.shutdown();
     stop();
 }
 
@@ -87,6 +94,20 @@ bool HttpServer::start()
         return false;
     }
 
+    wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (wake_fd_ < 0) {
+        std::cerr << "eventfd failed: " << std::strerror(errno) << '\n';
+        return false;
+    }
+
+    epoll_event wake_event {};
+    wake_event.events = EPOLLIN;
+    wake_event.data.fd = wake_fd_;
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, wake_fd_, &wake_event) < 0) {
+        std::cerr << "epoll_ctl wake fd failed: " << std::strerror(errno) << '\n';
+        return false;
+    }
+
     epoll_event event {};
     event.events = EPOLLIN;
     event.data.fd = listen_fd_;
@@ -96,6 +117,7 @@ bool HttpServer::start()
     }
 
     std::cout << "Mini-OSS HTTP server listening on 0.0.0.0:" << port_ << '\n';
+    std::cout << "Worker threads: " << thread_pool_.threadCount() << '\n';
     return true;
 }
 
@@ -115,23 +137,44 @@ void HttpServer::run(const std::function<bool()>& keep_running)
 
         for (int i = 0; i < n; ++i) {
             const int fd = events[i].data.fd;
+            const auto event_mask = events[i].events;
+
             if (fd == listen_fd_) {
                 acceptClients();
-            } else if ((events[i].events & EPOLLIN) != 0) {
+                continue;
+            }
+
+            if (fd == wake_fd_) {
+                handleWakeup();
+                continue;
+            }
+
+            if ((event_mask & EPOLLIN) != 0) {
                 handleClientRead(fd);
-            } else {
+                continue;
+            }
+
+            if ((event_mask & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) != 0) {
                 closeClient(fd);
             }
         }
     }
+
+    sendCompletedResponses();
 }
 
 void HttpServer::stop()
 {
-    for (const auto& item : buffers_) {
+    for (const auto& item : clients_) {
         ::close(item.first);
     }
-    buffers_.clear();
+    clients_.clear();
+
+    {
+        std::lock_guard<std::mutex> lock(responses_mutex_);
+        std::queue<PendingResponse> empty;
+        responses_.swap(empty);
+    }
 
     if (listen_fd_ >= 0) {
         ::close(listen_fd_);
@@ -140,6 +183,10 @@ void HttpServer::stop()
     if (epoll_fd_ >= 0) {
         ::close(epoll_fd_);
         epoll_fd_ = -1;
+    }
+    if (wake_fd_ >= 0) {
+        ::close(wake_fd_);
+        wake_fd_ = -1;
     }
 }
 
@@ -167,14 +214,27 @@ void HttpServer::acceptClients()
             continue;
         }
 
-        buffers_[client_fd] = {};
+        clients_[client_fd] = ClientState {{}, next_generation_++, false};
     }
+}
+
+void HttpServer::handleWakeup()
+{
+    std::uint64_t value = 0;
+    while (::read(wake_fd_, &value, sizeof(value)) > 0) {
+    }
+    sendCompletedResponses();
 }
 
 void HttpServer::handleClientRead(int client_fd)
 {
+    const auto client_it = clients_.find(client_fd);
+    if (client_it == clients_.end() || client_it->second.processing) {
+        return;
+    }
+
     char buffer[kBufferSize];
-    auto& request = buffers_[client_fd];
+    auto& request = client_it->second.buffer;
 
     while (true) {
         const ssize_t n = ::recv(client_fd, buffer, sizeof(buffer), 0);
@@ -219,15 +279,75 @@ void HttpServer::handleClientRead(int client_fd)
         return;
     }
 
-    std::string response;
-    if (!parse_result.ok) {
-        response = HttpResponse::badRequest(parse_result.error).serialize();
-    } else {
-        response = router_.route(parse_result.request).serialize();
+    const std::uint64_t generation = client_it->second.generation;
+    client_it->second.processing = true;
+
+    epoll_event event {};
+    event.events = EPOLLRDHUP;
+    event.data.fd = client_fd;
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, client_fd, &event) < 0) {
+        std::cerr << "epoll_ctl disable read failed: " << std::strerror(errno) << '\n';
+        closeClient(client_fd);
+        return;
     }
 
-    sendAll(client_fd, response);
-    closeClient(client_fd);
+    submitRequest(client_fd, generation, std::move(request));
+}
+
+void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::string raw_request)
+{
+    const bool queued = thread_pool_.enqueue([this, client_fd, generation, raw_request = std::move(raw_request)] {
+        const auto parse_result = parseHttpRequest(raw_request);
+        std::string response;
+        if (!parse_result.complete || !parse_result.ok) {
+            const std::string error = parse_result.error.empty() ? "invalid request" : parse_result.error;
+            response = HttpResponse::badRequest(error).serialize();
+        } else {
+            response = router_.route(parse_result.request).serialize();
+        }
+        enqueueResponse(client_fd, generation, std::move(response));
+    });
+
+    if (!queued) {
+        enqueueResponse(client_fd, generation,
+                        HttpResponse::text(503, "Service Unavailable", "server shutting down\n").serialize());
+    }
+}
+
+void HttpServer::enqueueResponse(int client_fd, std::uint64_t generation, std::string response)
+{
+    {
+        std::lock_guard<std::mutex> lock(responses_mutex_);
+        responses_.push(PendingResponse {client_fd, generation, std::move(response)});
+    }
+
+    if (wake_fd_ >= 0) {
+        const std::uint64_t value = kWakeupValue;
+        const ssize_t ignored = ::write(wake_fd_, &value, sizeof(value));
+        (void)ignored;
+    }
+}
+
+void HttpServer::sendCompletedResponses()
+{
+    std::queue<PendingResponse> responses;
+    {
+        std::lock_guard<std::mutex> lock(responses_mutex_);
+        responses.swap(responses_);
+    }
+
+    while (!responses.empty()) {
+        auto response = std::move(responses.front());
+        responses.pop();
+
+        const auto client_it = clients_.find(response.client_fd);
+        if (client_it == clients_.end() || client_it->second.generation != response.generation) {
+            continue;
+        }
+
+        sendAll(response.client_fd, response.response);
+        closeClient(response.client_fd);
+    }
 }
 
 void HttpServer::closeClient(int client_fd)
@@ -235,7 +355,7 @@ void HttpServer::closeClient(int client_fd)
     if (epoll_fd_ >= 0) {
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
     }
-    buffers_.erase(client_fd);
+    clients_.erase(client_fd);
     ::close(client_fd);
 }
 
