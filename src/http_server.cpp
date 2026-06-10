@@ -17,15 +17,29 @@ namespace {
 constexpr int kBacklog = 128;
 constexpr int kMaxEvents = 1024;
 constexpr int kBufferSize = 4096;
-constexpr int kMaxHeaderSize = 16 * 1024;
+constexpr std::size_t kMaxHeaderSize = 16 * 1024;
+constexpr std::size_t kMaxRequestSize = 10 * 1024 * 1024;
 
 } // namespace
 
 HttpServer::HttpServer(std::uint16_t port)
     : port_(port)
+    , object_store_("storage")
 {
     router_.addRoute(HttpMethod::Get, "/health", [](const HttpRequest&) {
         return HttpResponse::json(200, "OK", "{\"status\":\"ok\"}\n");
+    });
+    router_.addRoute(HttpMethod::Post, "/objects", [this](const HttpRequest& request) {
+        return object_store_.createObject(request);
+    });
+    router_.addRoute(HttpMethod::Get, "/objects", [this](const HttpRequest& request) {
+        return object_store_.listObjects(request);
+    });
+    router_.addPrefixRoute(HttpMethod::Get, "/objects/", [this](const HttpRequest& request) {
+        return object_store_.getObject(request);
+    });
+    router_.addPrefixRoute(HttpMethod::Delete, "/objects/", [this](const HttpRequest& request) {
+        return object_store_.deleteObject(request);
     });
 }
 
@@ -166,9 +180,18 @@ void HttpServer::handleClientRead(int client_fd)
         const ssize_t n = ::recv(client_fd, buffer, sizeof(buffer), 0);
         if (n > 0) {
             request.append(buffer, static_cast<std::size_t>(n));
-            if (request.size() > kMaxHeaderSize) {
-                const auto response = HttpResponse::text(413, "Payload Too Large",
+            const auto header_end = request.find("\r\n\r\n");
+            if (header_end == std::string::npos && request.size() > kMaxHeaderSize) {
+                const auto response = HttpResponse::text(431, "Request Header Fields Too Large",
                                                          "request header too large\n")
+                                          .serialize();
+                sendAll(client_fd, response);
+                closeClient(client_fd);
+                return;
+            }
+            if (request.size() > kMaxRequestSize) {
+                const auto response = HttpResponse::text(413, "Payload Too Large",
+                                                         "request body too large\n")
                                           .serialize();
                 sendAll(client_fd, response);
                 closeClient(client_fd);

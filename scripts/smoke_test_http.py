@@ -1,22 +1,35 @@
 #!/usr/bin/env python3
+import json
 import socket
 import subprocess
 import sys
 import time
 
 
-def request(path: str, method: str = "GET", raw_request: bytes | None = None) -> str:
+def request(
+    path: str,
+    method: str = "GET",
+    body: bytes = b"",
+    headers: dict[str, str] | None = None,
+    raw_request: bytes | None = None,
+) -> str:
     with socket.create_connection(("127.0.0.1", 18080), timeout=3) as sock:
         sock.settimeout(3)
         if raw_request is None:
-            raw = (
-                f"{method} {path} HTTP/1.1\r\n"
-                "Host: 127.0.0.1\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-            ).encode("ascii")
+            header_lines = [
+                f"{method} {path} HTTP/1.1",
+                "Host: 127.0.0.1",
+                "Connection: close",
+            ]
+            for key, value in (headers or {}).items():
+                header_lines.append(f"{key}: {value}")
+            if body:
+                header_lines.append(f"Content-Length: {len(body)}")
+            raw = ("\r\n".join(header_lines) + "\r\n\r\n").encode("ascii") + body
         else:
-            raw = raw_request
+            raw = (
+                raw_request
+            )
         sock.sendall(raw)
         chunks = []
         while True:
@@ -25,6 +38,10 @@ def request(path: str, method: str = "GET", raw_request: bytes | None = None) ->
                 break
             chunks.append(data)
     return b"".join(chunks).decode("utf-8", "replace")
+
+
+def response_body(response: str) -> str:
+    return response.split("\r\n\r\n", 1)[1]
 
 
 def main() -> int:
@@ -41,6 +58,18 @@ def main() -> int:
         missing = request("/not-found")
         method_not_allowed = request("/health", method="POST")
         bad_request = request("/", raw_request=b"BAD_REQUEST\r\n\r\n")
+        upload = request(
+            "/objects",
+            method="POST",
+            body=b"hello mini oss",
+            headers={"X-Filename": "hello.txt"},
+        )
+        upload_body = json.loads(response_body(upload))
+        object_id = upload_body["id"]
+        listing = request("/objects")
+        download = request(f"/objects/{object_id}")
+        delete = request(f"/objects/{object_id}", method="DELETE")
+        deleted_download = request(f"/objects/{object_id}")
     finally:
         proc.terminate()
         try:
@@ -57,6 +86,16 @@ def main() -> int:
     print(method_not_allowed)
     print("=== bad request ===")
     print(bad_request)
+    print("=== POST /objects ===")
+    print(upload)
+    print("=== GET /objects ===")
+    print(listing)
+    print("=== GET /objects/{id} ===")
+    print(download)
+    print("=== DELETE /objects/{id} ===")
+    print(delete)
+    print("=== GET deleted object ===")
+    print(deleted_download)
     print("=== server stdout ===")
     print(out)
     print("=== server stderr ===")
@@ -73,6 +112,21 @@ def main() -> int:
         return 1
     if "HTTP/1.1 400 Bad Request" not in bad_request:
         print("400 check failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 201 Created" not in upload or '"sha256"' not in upload:
+        print("object upload failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in listing or object_id not in listing:
+        print("object list failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in download or "hello mini oss" not in download:
+        print("object download failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in delete or '"deleted":true' not in delete:
+        print("object delete failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 404 Not Found" not in deleted_download:
+        print("deleted object 404 check failed", file=sys.stderr)
         return 1
     return 0
 

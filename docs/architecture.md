@@ -43,6 +43,7 @@ Linux File System / SQLite / Redis(optional)
 - Generate object IDs.
 - Support download, list, and delete.
 - Verify SHA-256 integrity.
+- Current MVP stores object metadata in memory and stores object files under `storage/objects`.
 
 ### Metadata Store
 
@@ -78,10 +79,26 @@ GET    /metrics
 
 ```text
 GET /health
+POST /objects
+GET /objects
+GET /objects/{id}
+DELETE /objects/{id}
 ```
 
 Response:
 
 ```json
 {"status":"ok"}
+```
+
+Object upload response:
+
+```json
+{
+  "id": "1",
+  "filename": "hello.txt",
+  "size": 14,
+  "sha256": "...",
+  "created_at": "2026-06-10T10:30:58Z"
+}
 ```

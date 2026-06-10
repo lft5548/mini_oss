@@ -35,6 +35,18 @@ Current MVP status:
 - Basic HTTP GET parsing: done.
 - `GET /health`: done.
 - 404 response for unknown GET paths: done.
+- `POST /objects`: done.
+- `GET /objects`: done.
+- `GET /objects/{id}`: done.
+- `DELETE /objects/{id}`: done.
+- SHA-256 object metadata: done.
+
+Known limitations before the next phase:
+
+- Metadata is stored in memory and will be lost after restart.
+- File upload currently accepts the full HTTP body in memory.
+- No user authentication yet.
+- No thread pool yet; request handling still runs in the event loop.
 
 ## Advanced Scope
 

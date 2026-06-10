@@ -6,6 +6,8 @@ project(mini_oss
     LANGUAGES CXX
 )
 
+find_package(OpenSSL REQUIRED)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -14,6 +16,7 @@ add_executable(mini_oss
     src/main.cpp
     src/http.cpp
     src/http_server.cpp
+    src/object_store.cpp
     src/router.cpp
 )
 
@@ -25,4 +28,8 @@ target_compile_options(mini_oss PRIVATE
     -Wall
     -Wextra
     -Wpedantic
+)
+
+target_link_libraries(mini_oss PRIVATE
+    OpenSSL::Crypto
 )

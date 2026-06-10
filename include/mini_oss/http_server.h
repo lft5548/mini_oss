@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mini_oss/object_store.h"
 #include "mini_oss/router.h"
 
 #include <cstdint>
@@ -33,6 +34,7 @@ private:
     int listen_fd_ = -1;
     int epoll_fd_ = -1;
     std::unordered_map<int, std::string> buffers_;
+    ObjectStore object_store_;
     Router router_;
 };
 

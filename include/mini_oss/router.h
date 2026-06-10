@@ -13,6 +13,7 @@ public:
     using Handler = std::function<HttpResponse(const HttpRequest&)>;
 
     void addRoute(HttpMethod method, std::string path, Handler handler);
+    void addPrefixRoute(HttpMethod method, std::string prefix, Handler handler);
     HttpResponse route(const HttpRequest& request) const;
 
 private:
@@ -20,6 +21,7 @@ private:
         HttpMethod method = HttpMethod::Unknown;
         std::string path;
         Handler handler;
+        bool prefix_match = false;
     };
 
     std::vector<Route> routes_;

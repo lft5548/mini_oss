@@ -48,8 +48,13 @@ The current MVP supports:
 
 - `GET /health`
 - `404 Not Found` for unknown GET paths
+- `POST /objects` upload an object body
+- `GET /objects` list in-memory object metadata
+- `GET /objects/{id}` download an object
+- `DELETE /objects/{id}` delete an object
 - Linux socket + non-blocking listening socket
 - epoll event loop
+- SHA-256 object integrity metadata
 
 ## Smoke Test
 
@@ -61,3 +66,38 @@ Expected checks:
 
 - `/health` returns `HTTP/1.1 200 OK`
 - `/not-found` returns `HTTP/1.1 404 Not Found`
+- object upload/list/download/delete flow passes
+
+## Example Object APIs
+
+Start the server:
+
+```bash
+./build/mini_oss --port 8080
+```
+
+Upload:
+
+```bash
+curl -i -X POST http://127.0.0.1:8080/objects \
+  -H "X-Filename: hello.txt" \
+  --data-binary "hello mini oss"
+```
+
+List:
+
+```bash
+curl -i http://127.0.0.1:8080/objects
+```
+
+Download:
+
+```bash
+curl -i http://127.0.0.1:8080/objects/1
+```
+
+Delete:
+
+```bash
+curl -i -X DELETE http://127.0.0.1:8080/objects/1
+```
