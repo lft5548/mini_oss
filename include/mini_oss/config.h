@@ -13,6 +13,7 @@ struct AppConfig {
     std::filesystem::path storage_dir = "storage";
     std::filesystem::path log_dir = "logs";
     std::uint64_t slow_request_ms = 200;
+    std::string auth_token;
 };
 
 bool loadConfigFile(const std::filesystem::path& path, AppConfig& config, std::string& error);

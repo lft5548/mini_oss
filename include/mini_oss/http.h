@@ -31,6 +31,7 @@ public:
     static HttpResponse badRequest(const std::string& message);
     static HttpResponse notFound();
     static HttpResponse methodNotAllowed();
+    static HttpResponse unauthorized();
 
     int statusCode() const;
     std::size_t bodySize() const;

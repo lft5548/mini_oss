@@ -21,7 +21,7 @@ namespace mini_oss {
 class HttpServer {
 public:
     HttpServer(std::uint16_t port, std::size_t worker_threads, std::filesystem::path storage_dir,
-               Logger& logger, std::uint64_t slow_request_ms = 200);
+               Logger& logger, std::uint64_t slow_request_ms = 200, std::string auth_token = {});
     ~HttpServer();
 
     HttpServer(const HttpServer&) = delete;
@@ -41,6 +41,8 @@ private:
     void sendCompletedResponses();
     void closeClient(int client_fd);
     void logServerError(const std::string& message);
+    bool requiresAuth(const HttpRequest& request) const;
+    bool isAuthorized(const HttpRequest& request) const;
     void logAccess(const std::string& remote, const std::string& method, const std::string& path,
                    int status_code, std::size_t request_bytes, std::size_t response_bytes,
                    std::uint64_t duration_ms);
@@ -73,6 +75,7 @@ private:
     Logger& logger_;
     Metrics metrics_;
     std::uint64_t slow_request_ms_ = 200;
+    std::string auth_token_;
     ObjectStore object_store_;
     Router router_;
     ThreadPool thread_pool_;

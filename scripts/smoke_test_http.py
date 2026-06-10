@@ -47,12 +47,15 @@ def response_body(response: str) -> str:
     return response.split("\r\n\r\n", 1)[1]
 
 
+AUTH_HEADERS = {"Authorization": "Bearer smoke-token"}
+
+
 def upload_parallel(index: int) -> str:
     response = request(
         "/objects",
         method="POST",
         body=f"parallel object {index}".encode("utf-8"),
-        headers={"X-Filename": f"parallel-{index}.txt"},
+        headers={**AUTH_HEADERS, "X-Filename": f"parallel-{index}.txt"},
     )
     if "HTTP/1.1 201 Created" not in response:
         raise RuntimeError(response)
@@ -69,7 +72,8 @@ def main() -> int:
     config_path.write_text(
         "[server]\nport = 18080\nthreads = 2\nslow_request_ms = 0\n\n"
         "[storage]\ndir = tmp/smoke_storage\n\n"
-        "[logging]\ndir = tmp/smoke_logs\n",
+        "[logging]\ndir = tmp/smoke_logs\n\n"
+        "[auth]\ntoken = smoke-token\n",
         encoding="utf-8",
     )
 
@@ -80,27 +84,33 @@ def main() -> int:
         missing = request("/not-found")
         method_not_allowed = request("/health", method="POST")
         bad_request = request("/", raw_request=b"BAD_REQUEST\r\n\r\n")
-        upload = request(
+        unauthorized_upload = request(
             "/objects",
             method="POST",
             body=b"hello mini oss",
             headers={"X-Filename": "hello.txt"},
+        )
+        upload = request(
+            "/objects",
+            method="POST",
+            body=b"hello mini oss",
+            headers={**AUTH_HEADERS, "X-Filename": "hello.txt"},
         )
         upload_body = json.loads(response_body(upload))
         object_id = upload_body["id"]
         with ThreadPoolExecutor(max_workers=8) as executor:
             parallel_ids = list(executor.map(upload_parallel, range(8)))
 
-        listing = request("/objects")
-        download = request(f"/objects/{object_id}")
+        listing = request("/objects", headers=AUTH_HEADERS)
+        download = request(f"/objects/{object_id}", headers=AUTH_HEADERS)
         stop_server(proc)
 
         proc = start_server(config_path)
-        restarted_listing = request("/objects")
-        restarted_download = request(f"/objects/{object_id}")
+        restarted_listing = request("/objects", headers=AUTH_HEADERS)
+        restarted_download = request(f"/objects/{object_id}", headers=AUTH_HEADERS)
 
-        delete = request(f"/objects/{object_id}", method="DELETE")
-        deleted_download = request(f"/objects/{object_id}")
+        delete = request(f"/objects/{object_id}", method="DELETE", headers=AUTH_HEADERS)
+        deleted_download = request(f"/objects/{object_id}", headers=AUTH_HEADERS)
         metrics = request("/metrics")
         metrics_body = json.loads(response_body(metrics))
     finally:
@@ -114,6 +124,8 @@ def main() -> int:
     print(method_not_allowed)
     print("=== bad request ===")
     print(bad_request)
+    print("=== POST /objects without auth ===")
+    print(unauthorized_upload)
     print("=== POST /objects ===")
     print(upload)
     print("=== GET /objects ===")
@@ -159,6 +171,9 @@ def main() -> int:
         return 1
     if "HTTP/1.1 400 Bad Request" not in bad_request:
         print("400 check failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 401 Unauthorized" not in unauthorized_upload:
+        print("unauthorized upload check failed", file=sys.stderr)
         return 1
     if "HTTP/1.1 201 Created" not in upload or '"sha256"' not in upload:
         print("object upload failed", file=sys.stderr)
@@ -224,6 +239,9 @@ def main() -> int:
     slow_text = slow_log.read_text(encoding="utf-8") if slow_log.exists() else ""
     if "method=GET path=/health status=200" not in access_text:
         print("access log health entry missing", file=sys.stderr)
+        return 1
+    if "method=POST path=/objects status=401" not in access_text:
+        print("access log unauthorized entry missing", file=sys.stderr)
         return 1
     if "method=POST path=/objects status=201" not in access_text:
         print("access log upload entry missing", file=sys.stderr)

@@ -92,6 +92,11 @@ HttpResponse HttpResponse::methodNotAllowed()
     return text(405, "Method Not Allowed", "method not allowed\n");
 }
 
+HttpResponse HttpResponse::unauthorized()
+{
+    return text(401, "Unauthorized", "unauthorized\n");
+}
+
 int HttpResponse::statusCode() const
 {
     return status_code_;

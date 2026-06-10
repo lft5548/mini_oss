@@ -9,7 +9,7 @@ HTTP API
   |
 HttpServer / Router
   |
-Config / Logger / FileService / UserService / MetricsService
+Config / Auth / Logger / FileService / UserService / MetricsService
   |
 MetadataStore / ObjectStore / Logger
   |
@@ -54,6 +54,12 @@ Linux File System / SQLite / Redis(optional)
 - Store object metadata: id, filename, path, size, sha256, owner, created_at.
 - Current implementation uses SQLite and stores metadata in `storage/metadata.db`.
 - SQLite WAL mode is enabled for the local single-node metadata store.
+
+### Auth
+
+- Optional token authentication protects object APIs when an auth token is configured.
+- Supports `Authorization: Bearer <token>` and `X-Auth-Token: <token>` headers.
+- Public endpoints such as `/health` and `/metrics` bypass authentication.
 
 ### Config
 

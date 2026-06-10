@@ -44,10 +44,11 @@ std::uint64_t elapsedMs(std::chrono::steady_clock::time_point started_at)
 
 HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
                        std::filesystem::path storage_dir, Logger& logger,
-                       std::uint64_t slow_request_ms)
+                       std::uint64_t slow_request_ms, std::string auth_token)
     : port_(port)
     , logger_(logger)
     , slow_request_ms_(slow_request_ms)
+    , auth_token_(std::move(auth_token))
     , object_store_(std::move(storage_dir))
     , thread_pool_(worker_threads)
 {
@@ -348,7 +349,11 @@ void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::str
         } else {
             method = httpMethodName(parse_result.request.method);
             path = parse_result.request.path;
-            http_response = router_.route(parse_result.request);
+            if (!isAuthorized(parse_result.request)) {
+                http_response = HttpResponse::unauthorized();
+            } else {
+                http_response = router_.route(parse_result.request);
+            }
         }
 
         const auto serialized = http_response.serialize();
@@ -418,6 +423,31 @@ void HttpServer::logServerError(const std::string& message)
 {
     std::cerr << message << '\n';
     logger_.error(message);
+}
+
+bool HttpServer::requiresAuth(const HttpRequest& request) const
+{
+    return request.path == "/objects" || request.path.rfind("/objects/", 0) == 0;
+}
+
+bool HttpServer::isAuthorized(const HttpRequest& request) const
+{
+    if (auth_token_.empty() || !requiresAuth(request)) {
+        return true;
+    }
+
+    const auto token_it = request.headers.find("x-auth-token");
+    if (token_it != request.headers.end() && token_it->second == auth_token_) {
+        return true;
+    }
+
+    const auto authorization_it = request.headers.find("authorization");
+    if (authorization_it == request.headers.end()) {
+        return false;
+    }
+
+    const std::string bearer_prefix = "Bearer ";
+    return authorization_it->second == bearer_prefix + auth_token_;
 }
 
 void HttpServer::logAccess(const std::string& remote, const std::string& method,

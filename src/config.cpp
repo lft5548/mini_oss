@@ -99,6 +99,11 @@ bool setConfigValue(AppConfig& config, const std::string& key, const std::string
         return true;
     }
 
+    if (key == "auth_token" || key == "auth.token" || key == "server.auth_token") {
+        config.auth_token = value;
+        return true;
+    }
+
     error = "unknown config key: " + key;
     return false;
 }

@@ -34,7 +34,8 @@ bool parseUnsigned(const std::string& value, std::uint64_t& parsed)
 void printUsage()
 {
     std::cout << "Usage: mini_oss [--config config.ini] [--port 8080] [--threads 4] "
-                 "[--storage-dir storage] [--log-dir logs] [--slow-request-ms 200] [--version]\n";
+                 "[--storage-dir storage] [--log-dir logs] [--slow-request-ms 200] "
+                 "[--auth-token token] [--version]\n";
 }
 }
 
@@ -47,6 +48,7 @@ int main(int argc, char* argv[])
     std::optional<std::filesystem::path> storage_dir_override;
     std::optional<std::filesystem::path> log_dir_override;
     std::optional<std::uint64_t> slow_request_ms_override;
+    std::optional<std::string> auth_token_override;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -78,6 +80,8 @@ int main(int argc, char* argv[])
                 return 1;
             }
             slow_request_ms_override = value;
+        } else if (arg == "--auth-token" && i + 1 < argc) {
+            auth_token_override = argv[++i];
         } else if (arg == "--version") {
             std::cout << "mini_oss " << MINI_OSS_VERSION << '\n';
             return 0;
@@ -118,6 +122,9 @@ int main(int argc, char* argv[])
     if (slow_request_ms_override.has_value()) {
         config.slow_request_ms = slow_request_ms_override.value();
     }
+    if (auth_token_override.has_value()) {
+        config.auth_token = auth_token_override.value();
+    }
 
     mini_oss::Logger logger(config.log_dir);
     if (!logger.ready()) {
@@ -136,7 +143,7 @@ int main(int argc, char* argv[])
     std::signal(SIGTERM, handleSignal);
 
     mini_oss::HttpServer server(config.port, config.worker_threads, config.storage_dir, logger,
-                                config.slow_request_ms);
+                                config.slow_request_ms, config.auth_token);
     if (!server.start()) {
         return 1;
     }

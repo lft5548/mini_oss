@@ -45,13 +45,14 @@ Current MVP status:
 - Config file parsing and command-line override: done.
 - Access/error/slow request logs: done.
 - `/metrics` runtime monitoring endpoint: done.
+- Token authentication for object APIs: done.
 
 Known limitations before the next phase:
 
 - Logging is synchronous file append; later versions can add async logging.
 - Metrics are in-process counters and reset after service restart.
 - File upload currently accepts the full HTTP body in memory.
-- No user authentication yet.
+- Token auth is static shared-token auth; later versions can add users, roles, or signed URLs.
 - No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.
 - Large response sending still happens in the event loop; later versions can add EPOLLOUT output buffers.
 

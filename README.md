@@ -49,7 +49,8 @@ Command-line options override the config file:
 
 ```bash
 ./build/mini_oss --config config.ini --port 8080 --threads 4 \
-  --storage-dir storage --log-dir logs --slow-request-ms 200
+  --storage-dir storage --log-dir logs --slow-request-ms 200 \
+  --auth-token dev-token
 ```
 
 The current MVP supports:
@@ -66,6 +67,7 @@ The current MVP supports:
 - worker thread pool for HTTP request handling
 - config file and command-line override support
 - access/error/slow request logs under configurable log directory
+- optional Token authentication for object APIs
 - SHA-256 object integrity metadata
 - SQLite metadata persistence under `storage/metadata.db`
 
@@ -85,6 +87,18 @@ Expected checks:
 - config file startup and command-line thread override work
 - `access.log`, `error.log`, and `slow.log` are generated
 - `/metrics` exposes runtime counters for requests, status results, bytes, latency, and active connections
+- object APIs return `401 Unauthorized` when auth token is configured and missing
+
+## Authentication
+
+If `auth.token` or `--auth-token` is set, object APIs require either `Authorization: Bearer <token>` or `X-Auth-Token: <token>`. `GET /health` and `GET /metrics` remain public.
+
+```bash
+curl -i -X POST http://127.0.0.1:8080/objects \
+  -H "Authorization: Bearer dev-token" \
+  -H "X-Filename: hello.txt" \
+  --data-binary "hello mini oss"
+```
 
 ## Metrics
 
