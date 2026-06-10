@@ -22,10 +22,16 @@ public:
     HttpResponse deleteObject(const HttpRequest& request);
 
 private:
+    struct ByteRange {
+        std::uint64_t start = 0;
+        std::uint64_t end = 0;
+    };
+
     static std::string extractObjectId(const std::string& path);
     static std::string sanitizeFilename(const std::string& filename);
     static bool isValidSha256(const std::string& sha256);
     static std::optional<std::uint64_t> parseSize(const std::string& value);
+    static std::optional<ByteRange> parseRangeHeader(const std::string& value, std::uint64_t total_size);
     static std::string sha256Hex(const std::string& data);
     static std::string now();
     HttpResponse createMetadataAlias(const ObjectInfo& source, const std::string& filename,

@@ -259,6 +259,19 @@ def wrk_base(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def wrk_range_base(args: argparse.Namespace) -> list[str]:
+    return [
+        "wrk",
+        "-t",
+        str(min(args.wrk_threads, 1)),
+        "-c",
+        str(min(args.wrk_connections, 4)),
+        "-d",
+        args.wrk_duration,
+        "--latency",
+    ]
+
+
 def lua_long_string(value: str) -> str:
     return "[==[" + value + "]==]"
 
@@ -301,6 +314,10 @@ def command_text(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
+def strip_trailing_whitespace(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
 def render_report(
     path: Path,
     args: argparse.Namespace,
@@ -331,6 +348,7 @@ def render_report(
         f"- ab read requests/concurrency: {args.read_requests}/{args.concurrency}",
         f"- ab write requests/concurrency: {args.write_requests}/{args.write_concurrency}",
         f"- wrk threads/connections/duration: {args.wrk_threads}/{args.wrk_connections}/{args.wrk_duration}",
+        f"- wrk Range threads/connections/duration: {min(args.wrk_threads, 1)}/{min(args.wrk_connections, 4)}/{args.wrk_duration}",
         f"- Seed object size: {args.object_size} bytes",
         "",
         "## Summary",
@@ -403,15 +421,15 @@ def render_report(
                 f"### {item.tool} {item.name}",
                 "",
                 "```text",
-                item.output.strip(),
+                strip_trailing_whitespace(item.output),
                 "```",
                 "",
             ]
         )
 
-    lines.extend(["## Server Output", "", "```text", server_stdout.strip(), "```"])
+    lines.extend(["## Server Output", "", "```text", strip_trailing_whitespace(server_stdout), "```"])
     if server_stderr.strip():
-        lines.extend(["", "## Server Stderr", "", "```text", server_stderr.strip(), "```"])
+        lines.extend(["", "## Server Stderr", "", "```text", strip_trailing_whitespace(server_stderr), "```"])
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -431,11 +449,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=18081)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--concurrency", type=int, default=16)
-    parser.add_argument("--write-concurrency", type=int, default=8)
+    parser.add_argument("--write-concurrency", type=int, default=4)
     parser.add_argument("--read-requests", type=int, default=120)
     parser.add_argument("--write-requests", type=int, default=40)
     parser.add_argument("--wrk-threads", type=int, default=2)
-    parser.add_argument("--wrk-connections", type=int, default=16)
+    parser.add_argument("--wrk-connections", type=int, default=12)
     parser.add_argument("--wrk-duration", default="3s")
     parser.add_argument("--object-size", type=int, default=4096)
     parser.add_argument("--report", type=Path, default=Path("docs/benchmark.md"))
@@ -490,6 +508,18 @@ def main() -> int:
                 "fixed-count metadata lookup + file read",
             ),
             run_ab_case(
+                "GET /objects/{id} Range",
+                ab_base(args.read_requests, args.concurrency)
+                + [
+                    "-H",
+                    AUTH_HEADER,
+                    "-H",
+                    "Range: bytes=0-1023",
+                    f"{url_base}/objects/{object_id}",
+                ],
+                "fixed-count partial object read",
+            ),
+            run_ab_case(
                 "POST /objects/instant",
                 ab_base(args.write_requests, args.write_concurrency)
                 + [
@@ -534,6 +564,18 @@ def main() -> int:
                 "GET /objects/{id}",
                 wrk_base(args) + ["-H", AUTH_HEADER, f"{url_base}/objects/{object_id}"],
                 "duration metadata lookup + file read",
+            ),
+            run_wrk_case(
+                "GET /objects/{id} Range",
+                wrk_range_base(args)
+                + [
+                    "-H",
+                    AUTH_HEADER,
+                    "-H",
+                    "Range: bytes=0-1023",
+                    f"{url_base}/objects/{object_id}",
+                ],
+                "duration partial object read",
             ),
             run_wrk_case(
                 "POST /objects/instant",

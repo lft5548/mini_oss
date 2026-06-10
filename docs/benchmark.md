@@ -5,7 +5,7 @@ The goal is to provide repeatable engineering evidence for throughput, latency, 
 
 ## Environment
 
-- Generated at: 2026-06-10 14:48:34 UTC
+- Generated at: 2026-06-10 15:16:34 UTC
 - Platform: Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.39
 - Python: 3.12.3
 - ab: This is ApacheBench, Version 2.3 <$Revision: 1903618 $>
@@ -13,22 +13,25 @@ The goal is to provide repeatable engineering evidence for throughput, latency, 
 - Server port: 18081
 - Worker threads: 4
 - ab read requests/concurrency: 120/16
-- ab write requests/concurrency: 40/8
-- wrk threads/connections/duration: 2/16/3s
+- ab write requests/concurrency: 40/4
+- wrk threads/connections/duration: 2/12/3s
+- wrk Range threads/connections/duration: 1/4/3s
 - Seed object size: 4096 bytes
 
 ## Summary
 
 | Tool | Case | Requests | Failed | QPS | Mean(ms) | P50(ms) | P95/90(ms) | P99(ms) | Transfer | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| ab | GET /health | 120 | 0 | 15420.20 | 1.04 | 1.00 | 1.00 | 2.00 | 1596.23 KB/s | fixed-count baseline |
-| ab | GET /objects/{id} | 120 | 0 | 13227.51 | 1.21 | 1.00 | 2.00 | 2.00 | 54201.80 KB/s | fixed-count metadata lookup + file read |
-| ab | POST /objects/instant | 40 | 0 | 123.98 | 64.53 | 63.00 | 65.00 | 65.00 | 38.48 KB/s | fixed-count SHA-256 lookup + metadata insert |
-| ab | POST /objects | 40 | 0 | 126.89 | 63.05 | 62.00 | 64.00 | 65.00 | 39.34 KB/s | fixed-count upload + SHA-256 + dedup |
-| wrk | GET /health | 54434 | 0 | 17561.65 | 0.82 | 0.79 | 1.02 | 1.51 | 1.78MB/sec | duration baseline |
-| wrk | GET /objects/{id} | 53158 | 0 | 17151.42 | 0.83 | 0.81 | 1.10 | 1.79 | 68.63MB/sec | duration metadata lookup + file read |
-| wrk | POST /objects/instant | 815 | 0 | 271.41 | 59.08 | 43.08 | 121.49 | 130.43 | 84.81KB/sec | duration SHA-256 lookup + metadata insert |
-| wrk | POST /objects | 1054 | 0 | 350.90 | 45.16 | 43.90 | 50.65 | 64.20 | 110.31KB/sec | duration upload + SHA-256 + dedup |
+| ab | GET /health | 120 | 0 | 18170.81 | 0.88 | 1.00 | 1.00 | 1.00 | 1880.96 KB/s | fixed-count baseline |
+| ab | GET /objects/{id} | 120 | 0 | 17174.75 | 0.93 | 1.00 | 1.00 | 1.00 | 70745.22 KB/s | fixed-count metadata lookup + file read |
+| ab | GET /objects/{id} Range | 120 | 0 | 16946.76 | 0.94 | 1.00 | 1.00 | 1.00 | 19743.64 KB/s | fixed-count partial object read |
+| ab | POST /objects/instant | 40 | 0 | 192.55 | 20.77 | 20.00 | 24.00 | 24.00 | 59.76 KB/s | fixed-count SHA-256 lookup + metadata insert |
+| ab | POST /objects | 40 | 0 | 181.56 | 22.03 | 21.00 | 32.00 | 33.00 | 56.30 KB/s | fixed-count upload + SHA-256 + dedup |
+| wrk | GET /health | 52991 | 0 | 17098.15 | 0.61 | 0.60 | 0.79 | 1.20 | 1.73MB/sec | duration baseline |
+| wrk | GET /objects/{id} | 49559 | 0 | 15986.77 | 0.68 | 0.66 | 0.87 | 1.41 | 64.31MB/sec | duration metadata lookup + file read |
+| wrk | GET /objects/{id} Range | 38703 | 0 | 12486.74 | 0.22 | 0.21 | 0.29 | 0.46 | 14.21MB/sec | duration partial object read |
+| wrk | POST /objects/instant | 944 | 0 | 314.27 | 37.94 | 30.59 | 61.46 | 76.65 | 98.21KB/sec | duration SHA-256 lookup + metadata insert |
+| wrk | POST /objects | 1121 | 0 | 373.26 | 31.87 | 30.78 | 39.66 | 54.36 | 117.37KB/sec | duration upload + SHA-256 + dedup |
 
 ## Seed Object
 
@@ -38,7 +41,7 @@ The goal is to provide repeatable engineering evidence for throughput, latency, 
   "filename": "benchmark-seed.bin",
   "size": 4096,
   "sha256": "8a27d27898099f9eacc3c01d1b4065ad4d666ff237176b526a6d4aad8469ef7a",
-  "created_at": "2026-06-10T14:48:21Z"
+  "created_at": "2026-06-10T15:16:19Z"
 }
 ```
 
@@ -47,13 +50,13 @@ The goal is to provide repeatable engineering evidence for throughput, latency, 
 ```json
 {
   "active_connections": 1,
-  "average_latency_ms": 0.92,
+  "average_latency_ms": 0.51,
   "failed_requests": 0,
-  "request_bytes": 12270007,
-  "response_bytes": 230032288,
-  "success_requests": 109839,
-  "total_latency_ms": 100768,
-  "total_requests": 109839
+  "request_bytes": 16457493,
+  "response_bytes": 262233705,
+  "success_requests": 143803,
+  "total_latency_ms": 72729,
+  "total_requests": 143803
 }
 ```
 
@@ -71,40 +74,52 @@ ab -l -n 120 -c 16 http://127.0.0.1:18081/health
 ab -l -n 120 -c 16 -H 'Authorization: Bearer benchmark-token' http://127.0.0.1:18081/objects/1
 ```
 
+### ab GET /objects/{id} Range
+
+```bash
+ab -l -n 120 -c 16 -H 'Authorization: Bearer benchmark-token' -H 'Range: bytes=0-1023' http://127.0.0.1:18081/objects/1
+```
+
 ### ab POST /objects/instant
 
 ```bash
-ab -l -n 40 -c 8 -p tmp/benchmark_empty.bin -T application/octet-stream -H 'Authorization: Bearer benchmark-token' -H 'X-Filename: ab-instant.bin' -H 'X-Object-Sha256: 8a27d27898099f9eacc3c01d1b4065ad4d666ff237176b526a6d4aad8469ef7a' -H 'X-Object-Size: 4096' http://127.0.0.1:18081/objects/instant
+ab -l -n 40 -c 4 -p tmp/benchmark_empty.bin -T application/octet-stream -H 'Authorization: Bearer benchmark-token' -H 'X-Filename: ab-instant.bin' -H 'X-Object-Sha256: 8a27d27898099f9eacc3c01d1b4065ad4d666ff237176b526a6d4aad8469ef7a' -H 'X-Object-Size: 4096' http://127.0.0.1:18081/objects/instant
 ```
 
 ### ab POST /objects
 
 ```bash
-ab -l -n 40 -c 8 -p tmp/benchmark_upload.bin -T application/octet-stream -H 'Authorization: Bearer benchmark-token' -H 'X-Filename: ab-upload.bin' http://127.0.0.1:18081/objects
+ab -l -n 40 -c 4 -p tmp/benchmark_upload.bin -T application/octet-stream -H 'Authorization: Bearer benchmark-token' -H 'X-Filename: ab-upload.bin' http://127.0.0.1:18081/objects
 ```
 
 ### wrk GET /health
 
 ```bash
-wrk -t 2 -c 16 -d 3s --latency http://127.0.0.1:18081/health
+wrk -t 2 -c 12 -d 3s --latency http://127.0.0.1:18081/health
 ```
 
 ### wrk GET /objects/{id}
 
 ```bash
-wrk -t 2 -c 16 -d 3s --latency -H 'Authorization: Bearer benchmark-token' http://127.0.0.1:18081/objects/1
+wrk -t 2 -c 12 -d 3s --latency -H 'Authorization: Bearer benchmark-token' http://127.0.0.1:18081/objects/1
+```
+
+### wrk GET /objects/{id} Range
+
+```bash
+wrk -t 1 -c 4 -d 3s --latency -H 'Authorization: Bearer benchmark-token' -H 'Range: bytes=0-1023' http://127.0.0.1:18081/objects/1
 ```
 
 ### wrk POST /objects/instant
 
 ```bash
-wrk -t 2 -c 16 -d 3s --latency -s tmp/benchmark_instant.lua http://127.0.0.1:18081/objects/instant
+wrk -t 2 -c 12 -d 3s --latency -s tmp/benchmark_instant.lua http://127.0.0.1:18081/objects/instant
 ```
 
 ### wrk POST /objects
 
 ```bash
-wrk -t 2 -c 16 -d 3s --latency -s tmp/benchmark_upload.lua http://127.0.0.1:18081/objects
+wrk -t 2 -c 12 -d 3s --latency -s tmp/benchmark_upload.lua http://127.0.0.1:18081/objects
 ```
 
 ## Interpretation
@@ -134,7 +149,7 @@ Licensed to The Apache Software Foundation, http://www.apache.org/
 Benchmarking 127.0.0.1 (be patient).....done
 
 
-Server Software:        
+Server Software:
 Server Hostname:        127.0.0.1
 Server Port:            18081
 
@@ -142,22 +157,22 @@ Document Path:          /health
 Document Length:        Variable
 
 Concurrency Level:      16
-Time taken for tests:   0.008 seconds
+Time taken for tests:   0.007 seconds
 Complete requests:      120
 Failed requests:        0
 Total transferred:      12720 bytes
 HTML transferred:       1920 bytes
-Requests per second:    15420.20 [#/sec] (mean)
-Time per request:       1.038 [ms] (mean)
-Time per request:       0.065 [ms] (mean, across all concurrent requests)
-Transfer rate:          1596.23 [Kbytes/sec] received
+Requests per second:    18170.81 [#/sec] (mean)
+Time per request:       0.881 [ms] (mean)
+Time per request:       0.055 [ms] (mean, across all concurrent requests)
+Transfer rate:          1880.96 [Kbytes/sec] received
 
 Connection Times (ms)
               min  mean[+/-sd] median   max
-Connect:        0    0   0.2      0       1
+Connect:        0    0   0.1      0       0
 Processing:     0    1   0.2      1       1
 Waiting:        0    1   0.2      1       1
-Total:          1    1   0.2      1       2
+Total:          1    1   0.2      1       1
 
 Percentage of the requests served within a certain time (ms)
   50%      1
@@ -167,8 +182,8 @@ Percentage of the requests served within a certain time (ms)
   90%      1
   95%      1
   98%      1
-  99%      2
- 100%      2 (longest request)
+  99%      1
+ 100%      1 (longest request)
 ```
 
 ### ab GET /objects/{id}
@@ -181,7 +196,7 @@ Licensed to The Apache Software Foundation, http://www.apache.org/
 Benchmarking 127.0.0.1 (be patient).....done
 
 
-Server Software:        
+Server Software:
 Server Hostname:        127.0.0.1
 Server Port:            18081
 
@@ -189,22 +204,22 @@ Document Path:          /objects/1
 Document Length:        Variable
 
 Concurrency Level:      16
-Time taken for tests:   0.009 seconds
+Time taken for tests:   0.007 seconds
 Complete requests:      120
 Failed requests:        0
-Total transferred:      503520 bytes
+Total transferred:      506160 bytes
 HTML transferred:       491520 bytes
-Requests per second:    13227.51 [#/sec] (mean)
-Time per request:       1.210 [ms] (mean)
-Time per request:       0.076 [ms] (mean, across all concurrent requests)
-Transfer rate:          54201.80 [Kbytes/sec] received
+Requests per second:    17174.75 [#/sec] (mean)
+Time per request:       0.932 [ms] (mean)
+Time per request:       0.058 [ms] (mean, across all concurrent requests)
+Transfer rate:          70745.22 [Kbytes/sec] received
 
 Connection Times (ms)
               min  mean[+/-sd] median   max
-Connect:        0    0   0.1      0       1
-Processing:     0    1   0.3      1       2
-Waiting:        0    1   0.3      1       2
-Total:          1    1   0.3      1       2
+Connect:        0    0   0.2      0       1
+Processing:     0    1   0.2      1       1
+Waiting:        0    1   0.2      1       1
+Total:          0    1   0.2      1       2
 
 Percentage of the requests served within a certain time (ms)
   50%      1
@@ -212,10 +227,57 @@ Percentage of the requests served within a certain time (ms)
   75%      1
   80%      1
   90%      1
-  95%      2
-  98%      2
-  99%      2
+  95%      1
+  98%      1
+  99%      1
  100%      2 (longest request)
+```
+
+### ab GET /objects/{id} Range
+
+```text
+This is ApacheBench, Version 2.3 <$Revision: 1903618 $>
+Copyright 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Licensed to The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient).....done
+
+
+Server Software:
+Server Hostname:        127.0.0.1
+Server Port:            18081
+
+Document Path:          /objects/1
+Document Length:        Variable
+
+Concurrency Level:      16
+Time taken for tests:   0.007 seconds
+Complete requests:      120
+Failed requests:        0
+Total transferred:      143160 bytes
+HTML transferred:       122880 bytes
+Requests per second:    16946.76 [#/sec] (mean)
+Time per request:       0.944 [ms] (mean)
+Time per request:       0.059 [ms] (mean, across all concurrent requests)
+Transfer rate:          19743.64 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.1      0       1
+Processing:     0    1   0.1      1       1
+Waiting:        0    1   0.2      1       1
+Total:          0    1   0.1      1       1
+
+Percentage of the requests served within a certain time (ms)
+  50%      1
+  66%      1
+  75%      1
+  80%      1
+  90%      1
+  95%      1
+  98%      1
+  99%      1
+ 100%      1 (longest request)
 ```
 
 ### ab POST /objects/instant
@@ -228,44 +290,44 @@ Licensed to The Apache Software Foundation, http://www.apache.org/
 Benchmarking 127.0.0.1 (be patient).....done
 
 
-Server Software:        
+Server Software:
 Server Hostname:        127.0.0.1
 Server Port:            18081
 
 Document Path:          /objects/instant
 Document Length:        Variable
 
-Concurrency Level:      8
-Time taken for tests:   0.323 seconds
+Concurrency Level:      4
+Time taken for tests:   0.208 seconds
 Complete requests:      40
 Failed requests:        0
 Total transferred:      12712 bytes
 Total body sent:        13160
 HTML transferred:       8872 bytes
-Requests per second:    123.98 [#/sec] (mean)
-Time per request:       64.525 [ms] (mean)
-Time per request:       8.066 [ms] (mean, across all concurrent requests)
-Transfer rate:          38.48 [Kbytes/sec] received
-                        39.83 kb/s sent
-                        78.31 kb/s total
+Requests per second:    192.55 [#/sec] (mean)
+Time per request:       20.774 [ms] (mean)
+Time per request:       5.194 [ms] (mean, across all concurrent requests)
+Transfer rate:          59.76 [Kbytes/sec] received
+                        61.86 kb/s sent
+                        121.62 kb/s total
 
 Connection Times (ms)
               min  mean[+/-sd] median   max
-Connect:        0    0   0.1      0       0
-Processing:     8   57  15.5     63      65
-Waiting:        8   57  15.6     63      65
-Total:          8   57  15.5     63      65
+Connect:        0    0   0.0      0       0
+Processing:     5   20   4.0     20      24
+Waiting:        5   20   4.0     20      24
+Total:          5   20   4.0     20      24
 
 Percentage of the requests served within a certain time (ms)
-  50%     63
-  66%     64
-  75%     64
-  80%     64
-  90%     65
-  95%     65
-  98%     65
-  99%     65
- 100%     65 (longest request)
+  50%     20
+  66%     21
+  75%     21
+  80%     21
+  90%     23
+  95%     24
+  98%     24
+  99%     24
+ 100%     24 (longest request)
 ```
 
 ### ab POST /objects
@@ -278,116 +340,134 @@ Licensed to The Apache Software Foundation, http://www.apache.org/
 Benchmarking 127.0.0.1 (be patient).....done
 
 
-Server Software:        
+Server Software:
 Server Hostname:        127.0.0.1
 Server Port:            18081
 
 Document Path:          /objects
 Document Length:        Variable
 
-Concurrency Level:      8
-Time taken for tests:   0.315 seconds
+Concurrency Level:      4
+Time taken for tests:   0.220 seconds
 Complete requests:      40
 Failed requests:        0
 Total transferred:      12700 bytes
 Total body sent:        172600
 HTML transferred:       8860 bytes
-Requests per second:    126.89 [#/sec] (mean)
-Time per request:       63.048 [ms] (mean)
-Time per request:       7.881 [ms] (mean, across all concurrent requests)
-Transfer rate:          39.34 [Kbytes/sec] received
-                        534.69 kb/s sent
-                        574.03 kb/s total
+Requests per second:    181.56 [#/sec] (mean)
+Time per request:       22.031 [ms] (mean)
+Time per request:       5.508 [ms] (mean, across all concurrent requests)
+Transfer rate:          56.30 [Kbytes/sec] received
+                        765.09 kb/s sent
+                        821.39 kb/s total
 
 Connection Times (ms)
               min  mean[+/-sd] median   max
-Connect:        0    0   0.1      0       0
-Processing:     9   56  15.3     62      64
-Waiting:        8   56  15.3     62      64
-Total:          9   56  15.3     62      65
+Connect:        0    0   0.0      0       0
+Processing:     6   21   5.0     21      32
+Waiting:        6   21   5.0     21      32
+Total:          6   21   5.0     21      33
 
 Percentage of the requests served within a certain time (ms)
-  50%     62
-  66%     62
-  75%     63
-  80%     64
-  90%     64
-  95%     64
-  98%     65
-  99%     65
- 100%     65 (longest request)
+  50%     21
+  66%     21
+  75%     21
+  80%     21
+  90%     25
+  95%     32
+  98%     33
+  99%     33
+ 100%     33 (longest request)
 ```
 
 ### wrk GET /health
 
 ```text
 Running 3s test @ http://127.0.0.1:18081/health
-  2 threads and 16 connections
+  2 threads and 12 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency   820.85us  201.69us   3.21ms   82.06%
-    Req/Sec     8.96k     0.97k   14.32k    83.61%
+    Latency   614.65us  169.42us   2.88ms   78.50%
+    Req/Sec     8.73k   601.64    10.56k    78.69%
   Latency Distribution
-     50%  794.00us
-     75%    0.90ms
-     90%    1.02ms
-     99%    1.51ms
-  54434 requests in 3.10s, 5.50MB read
-Requests/sec:  17561.65
-Transfer/sec:      1.78MB
+     50%  600.00us
+     75%  686.00us
+     90%  790.00us
+     99%    1.20ms
+  52991 requests in 3.10s, 5.36MB read
+Requests/sec:  17098.15
+Transfer/sec:      1.73MB
 ```
 
 ### wrk GET /objects/{id}
 
 ```text
 Running 3s test @ http://127.0.0.1:18081/objects/1
-  2 threads and 16 connections
+  2 threads and 12 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency   830.96us  277.92us   5.28ms   80.59%
-    Req/Sec     8.76k     1.06k   15.07k    85.25%
+    Latency   683.86us  220.72us   5.00ms   86.20%
+    Req/Sec     8.04k   609.02     9.21k    53.23%
   Latency Distribution
-     50%  805.00us
-     75%    0.94ms
-     90%    1.10ms
-     99%    1.79ms
-  53158 requests in 3.10s, 212.72MB read
-Requests/sec:  17151.42
-Transfer/sec:     68.63MB
+     50%  656.00us
+     75%  753.00us
+     90%    0.87ms
+     99%    1.41ms
+  49559 requests in 3.10s, 199.36MB read
+Requests/sec:  15986.77
+Transfer/sec:     64.31MB
+```
+
+### wrk GET /objects/{id} Range
+
+```text
+Running 3s test @ http://127.0.0.1:18081/objects/1
+  1 threads and 4 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   224.79us   67.38us   1.67ms   82.43%
+    Req/Sec    12.55k   221.25    13.03k    67.74%
+  Latency Distribution
+     50%  212.00us
+     75%  252.00us
+     90%  294.00us
+     99%  464.00us
+  38703 requests in 3.10s, 44.03MB read
+Requests/sec:  12486.74
+Transfer/sec:     14.21MB
 ```
 
 ### wrk POST /objects/instant
 
 ```text
 Running 3s test @ http://127.0.0.1:18081/objects/instant
-  2 threads and 16 connections
+  2 threads and 12 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency    59.08ms   28.23ms 130.95ms   84.22%
-    Req/Sec   136.18     60.31   222.00     60.00%
+    Latency    37.94ms   13.93ms  92.93ms   71.01%
+    Req/Sec   157.70     49.16   212.00     63.33%
   Latency Distribution
-     50%   43.08ms
-     75%   69.88ms
-     90%  121.49ms
-     99%  130.43ms
-  815 requests in 3.00s, 254.67KB read
-Requests/sec:    271.41
-Transfer/sec:     84.81KB
+     50%   30.59ms
+     75%   41.69ms
+     90%   61.46ms
+     99%   76.65ms
+  944 requests in 3.00s, 295.01KB read
+Requests/sec:    314.27
+Transfer/sec:     98.21KB
 ```
 
 ### wrk POST /objects
 
 ```text
 Running 3s test @ http://127.0.0.1:18081/objects
-  2 threads and 16 connections
+  2 threads and 12 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency    45.16ms    4.78ms  80.32ms   86.81%
-    Req/Sec   176.23     21.18   212.00     76.67%
+    Latency    31.87ms    6.49ms  85.69ms   70.58%
+    Req/Sec   187.33     16.36   212.00     81.67%
   Latency Distribution
-     50%   43.90ms
-     75%   46.00ms
-     90%   50.65ms
-     99%   64.20ms
-  1054 requests in 3.00s, 331.35KB read
-Requests/sec:    350.90
-Transfer/sec:    110.31KB
+     50%   30.78ms
+     75%   32.27ms
+     90%   39.66ms
+     99%   54.36ms
+  1121 requests in 3.00s, 352.50KB read
+Requests/sec:    373.26
+Transfer/sec:    117.37KB
 ```
 
 ## Server Output

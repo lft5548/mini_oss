@@ -49,6 +49,7 @@ Linux File System / SQLite / Redis(optional)
 - Verify SHA-256 integrity.
 - Reuse existing physical files when uploaded content has the same SHA-256 and size.
 - Support instant upload by creating new metadata for an existing SHA-256 without resending the file body.
+- Support single-range object download with `206 Partial Content`, `Content-Range`, and `Accept-Ranges`.
 - Delete metadata first and remove the physical file only when no remaining object references point to it.
 - Current MVP stores object files under `storage/objects` and persists metadata through SQLite.
 
@@ -99,6 +100,7 @@ POST   /objects
 POST   /objects/instant
 GET    /objects
 GET    /objects/{id}
+GET    /objects/{id}  Range: bytes=start-end
 DELETE /objects/{id}
 GET /metrics
 GET    /metrics
@@ -112,6 +114,7 @@ POST /objects
 POST /objects/instant
 GET /objects
 GET /objects/{id}
+GET /objects/{id}  Range: bytes=start-end
 DELETE /objects/{id}
 ```
 

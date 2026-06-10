@@ -39,6 +39,7 @@ Current MVP status:
 - `POST /objects/instant`: done.
 - `GET /objects`: done.
 - `GET /objects/{id}`: done.
+- `GET /objects/{id}` Range download: done.
 - `DELETE /objects/{id}`: done.
 - SHA-256 object metadata: done.
 - SHA-256 based deduplication and instant upload: done.

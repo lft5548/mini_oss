@@ -133,6 +133,22 @@ def main() -> int:
 
         listing = request("/objects", headers=AUTH_HEADERS)
         download = request(f"/objects/{object_id}", headers=AUTH_HEADERS)
+        range_prefix = request(
+            f"/objects/{object_id}",
+            headers={**AUTH_HEADERS, "Range": "bytes=0-4"},
+        )
+        range_open_end = request(
+            f"/objects/{object_id}",
+            headers={**AUTH_HEADERS, "Range": "bytes=6-"},
+        )
+        range_suffix = request(
+            f"/objects/{object_id}",
+            headers={**AUTH_HEADERS, "Range": "bytes=-3"},
+        )
+        range_invalid = request(
+            f"/objects/{object_id}",
+            headers={**AUTH_HEADERS, "Range": "bytes=999-1000"},
+        )
         stop_server(proc)
 
         proc = start_server(config_path)
@@ -181,6 +197,14 @@ def main() -> int:
     print(listing)
     print("=== GET /objects/{id} ===")
     print(download)
+    print("=== GET /objects/{id} Range bytes=0-4 ===")
+    print(range_prefix)
+    print("=== GET /objects/{id} Range bytes=6- ===")
+    print(range_open_end)
+    print("=== GET /objects/{id} Range bytes=-3 ===")
+    print(range_suffix)
+    print("=== GET /objects/{id} invalid Range ===")
+    print(range_invalid)
     print("=== concurrent upload ids ===")
     print(parallel_ids)
     print("=== GET /objects after restart ===")
@@ -272,6 +296,37 @@ def main() -> int:
         return 1
     if "HTTP/1.1 200 OK" not in download or "hello mini oss" not in download:
         print("object download failed", file=sys.stderr)
+        return 1
+    if "Accept-Ranges: bytes" not in download:
+        print("download accept-ranges header missing", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 206 Partial Content" not in range_prefix
+        or "Content-Range: bytes 0-4/14" not in range_prefix
+        or response_body(range_prefix) != "hello"
+    ):
+        print("range prefix download failed", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 206 Partial Content" not in range_open_end
+        or "Content-Range: bytes 6-13/14" not in range_open_end
+        or response_body(range_open_end) != "mini oss"
+    ):
+        print("range open-end download failed", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 206 Partial Content" not in range_suffix
+        or "Content-Range: bytes 11-13/14" not in range_suffix
+        or response_body(range_suffix) != "oss"
+    ):
+        print("range suffix download failed", file=sys.stderr)
+        return 1
+    if (
+        "HTTP/1.1 416 Range Not Satisfiable" not in range_invalid
+        or "Content-Range: bytes */14" not in range_invalid
+        or "Accept-Ranges: bytes" not in range_invalid
+    ):
+        print("invalid range check failed", file=sys.stderr)
         return 1
     if (
         "HTTP/1.1 200 OK" not in restarted_listing

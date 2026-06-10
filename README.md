@@ -61,6 +61,7 @@ The current MVP supports:
 - `POST /objects/instant` create an object by existing SHA-256 metadata
 - `GET /objects` list persisted object metadata
 - `GET /objects/{id}` download an object
+- `GET /objects/{id}` with `Range: bytes=start-end` download part of an object
 - `DELETE /objects/{id}` delete an object
 - `GET /metrics` expose runtime metrics
 - Linux socket + non-blocking listening socket
@@ -89,6 +90,7 @@ Expected checks:
 - duplicate object bodies reuse the existing physical file
 - instant upload creates metadata without resending object content
 - shared physical files are removed only after the last object reference is deleted
+- Range download returns `206 Partial Content` and invalid ranges return `416 Range Not Satisfiable`
 - concurrent object uploads return unique persisted object IDs
 - config file startup and command-line thread override work
 - `access.log`, `error.log`, and `slow.log` are generated
@@ -168,6 +170,13 @@ Download:
 
 ```bash
 curl -i http://127.0.0.1:8080/objects/1
+```
+
+Range download:
+
+```bash
+curl -i http://127.0.0.1:8080/objects/1 \
+  -H "Range: bytes=0-1023"
 ```
 
 Delete:

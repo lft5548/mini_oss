@@ -1,5 +1,6 @@
 #include "mini_oss/object_store.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
@@ -229,9 +230,32 @@ HttpResponse ObjectStore::getObject(const HttpRequest& request)
     if (!in) {
         return HttpResponse::text(500, "Internal Server Error", "cannot open object file\n");
     }
+
+    const auto range_header = request.headers.find("range");
+    if (range_header != request.headers.end()) {
+        const auto range = parseRangeHeader(range_header->second, info->size);
+        if (!range.has_value()) {
+            return HttpResponse::rangeNotSatisfiable(info->size);
+        }
+
+        const auto length = range->end - range->start + 1;
+        std::string content(static_cast<std::size_t>(length), '\0');
+        in.seekg(static_cast<std::streamoff>(range->start), std::ios::beg);
+        in.read(content.data(), static_cast<std::streamsize>(content.size()));
+        if (in.gcount() != static_cast<std::streamsize>(content.size())) {
+            return HttpResponse::text(500, "Internal Server Error", "cannot read object range\n");
+        }
+
+        std::ostringstream content_range;
+        content_range << "bytes " << range->start << '-' << range->end << '/' << info->size;
+        return HttpResponse(206, "Partial Content", "application/octet-stream", std::move(content),
+                            {{"Content-Range", content_range.str()}, {"Accept-Ranges", "bytes"}});
+    }
+
     std::ostringstream content;
     content << in.rdbuf();
-    return HttpResponse(200, "OK", "application/octet-stream", content.str());
+    return HttpResponse(200, "OK", "application/octet-stream", content.str(),
+                        {{"Accept-Ranges", "bytes"}});
 }
 
 HttpResponse ObjectStore::deleteObject(const HttpRequest& request)
@@ -330,6 +354,62 @@ std::optional<std::uint64_t> ObjectStore::parseSize(const std::string& value)
         return std::nullopt;
     }
     return static_cast<std::uint64_t>(parsed);
+}
+
+std::optional<ObjectStore::ByteRange> ObjectStore::parseRangeHeader(const std::string& value,
+                                                                    std::uint64_t total_size)
+{
+    if (total_size == 0 || value.rfind("bytes=", 0) != 0) {
+        return std::nullopt;
+    }
+
+    const std::string spec = value.substr(6);
+    if (spec.empty() || spec.find(',') != std::string::npos) {
+        return std::nullopt;
+    }
+
+    const auto dash = spec.find('-');
+    if (dash == std::string::npos) {
+        return std::nullopt;
+    }
+
+    const std::string start_text = spec.substr(0, dash);
+    const std::string end_text = spec.substr(dash + 1);
+    if (start_text.empty() && end_text.empty()) {
+        return std::nullopt;
+    }
+
+    ByteRange range;
+    if (start_text.empty()) {
+        const auto suffix_length = parseSize(end_text);
+        if (!suffix_length.has_value() || suffix_length.value() == 0) {
+            return std::nullopt;
+        }
+        if (suffix_length.value() >= total_size) {
+            range.start = 0;
+        } else {
+            range.start = total_size - suffix_length.value();
+        }
+        range.end = total_size - 1;
+        return range;
+    }
+
+    const auto start = parseSize(start_text);
+    if (!start.has_value() || start.value() >= total_size) {
+        return std::nullopt;
+    }
+
+    range.start = start.value();
+    if (end_text.empty()) {
+        range.end = total_size - 1;
+    } else {
+        const auto end = parseSize(end_text);
+        if (!end.has_value() || end.value() < range.start) {
+            return std::nullopt;
+        }
+        range.end = std::min(end.value(), total_size - 1);
+    }
+    return range;
 }
 
 std::string ObjectStore::sha256Hex(const std::string& data)

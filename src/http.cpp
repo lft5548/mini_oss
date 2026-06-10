@@ -59,11 +59,12 @@ bool parseContentLength(const std::unordered_map<std::string, std::string>& head
 } // namespace
 
 HttpResponse::HttpResponse(int status_code, std::string status_text, std::string content_type,
-                           std::string body)
+                           std::string body, std::vector<Header> headers)
     : status_code_(status_code)
     , status_text_(std::move(status_text))
     , content_type_(std::move(content_type))
     , body_(std::move(body))
+    , headers_(std::move(headers))
 {
 }
 
@@ -72,9 +73,11 @@ HttpResponse HttpResponse::json(int status_code, std::string status_text, std::s
     return HttpResponse(status_code, std::move(status_text), "application/json", std::move(body));
 }
 
-HttpResponse HttpResponse::text(int status_code, std::string status_text, std::string body)
+HttpResponse HttpResponse::text(int status_code, std::string status_text, std::string body,
+                                std::vector<Header> headers)
 {
-    return HttpResponse(status_code, std::move(status_text), "text/plain", std::move(body));
+    return HttpResponse(status_code, std::move(status_text), "text/plain", std::move(body),
+                        std::move(headers));
 }
 
 HttpResponse HttpResponse::badRequest(const std::string& message)
@@ -97,6 +100,13 @@ HttpResponse HttpResponse::unauthorized()
     return text(401, "Unauthorized", "unauthorized\n");
 }
 
+HttpResponse HttpResponse::rangeNotSatisfiable(std::uint64_t total_size)
+{
+    return text(416, "Range Not Satisfiable", "range not satisfiable\n",
+                {{"Content-Range", "bytes */" + std::to_string(total_size)},
+                 {"Accept-Ranges", "bytes"}});
+}
+
 int HttpResponse::statusCode() const
 {
     return status_code_;
@@ -112,8 +122,11 @@ std::string HttpResponse::serialize() const
     std::ostringstream oss;
     oss << "HTTP/1.1 " << status_code_ << ' ' << status_text_ << "\r\n"
         << "Content-Type: " << content_type_ << "\r\n"
-        << "Content-Length: " << body_.size() << "\r\n"
-        << "Connection: close\r\n"
+        << "Content-Length: " << body_.size() << "\r\n";
+    for (const auto& header : headers_) {
+        oss << header.first << ": " << header.second << "\r\n";
+    }
+    oss << "Connection: close\r\n"
         << "\r\n"
         << body_;
     return oss.str();
