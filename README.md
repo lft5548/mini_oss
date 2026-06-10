@@ -41,7 +41,15 @@ cmake --build build
 ## Run
 
 ```bash
+cp config.example.ini config.ini
 ./build/mini_oss --config config.ini
+```
+
+Command-line options override the config file:
+
+```bash
+./build/mini_oss --config config.ini --port 8080 --threads 4 \
+  --storage-dir storage --log-dir logs --slow-request-ms 200
 ```
 
 The current MVP supports:
@@ -55,6 +63,8 @@ The current MVP supports:
 - Linux socket + non-blocking listening socket
 - epoll event loop
 - worker thread pool for HTTP request handling
+- config file and command-line override support
+- access/error/slow request logs under configurable log directory
 - SHA-256 object integrity metadata
 - SQLite metadata persistence under `storage/metadata.db`
 
@@ -71,6 +81,16 @@ Expected checks:
 - object upload/list/download/delete flow passes
 - object metadata survives a service restart
 - concurrent object uploads return unique persisted object IDs
+- config file startup and command-line thread override work
+- `access.log`, `error.log`, and `slow.log` are generated
+
+## Logs
+
+Mini-OSS writes logs to the configured log directory:
+
+- `access.log`: remote address, method, path, status code, response bytes, request latency.
+- `error.log`: startup/shutdown events and server-side errors.
+- `slow.log`: requests whose latency is greater than or equal to `slow_request_ms`.
 
 ## Example Object APIs
 

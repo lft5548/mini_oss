@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
@@ -9,6 +10,7 @@
 #include <mutex>
 #include <netinet/in.h>
 #include <queue>
+#include <sstream>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
@@ -25,11 +27,28 @@ constexpr int kBufferSize = 4096;
 constexpr std::size_t kMaxHeaderSize = 16 * 1024;
 constexpr std::size_t kMaxRequestSize = 10 * 1024 * 1024;
 
+std::string socketError(const char* operation)
+{
+    return std::string(operation) + " failed: " + std::strerror(errno);
+}
+
+std::uint64_t elapsedMs(std::chrono::steady_clock::time_point started_at)
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_at)
+            .count());
+}
+
 } // namespace
 
-HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads)
+HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
+                       std::filesystem::path storage_dir, Logger& logger,
+                       std::uint64_t slow_request_ms)
     : port_(port)
-    , object_store_("storage")
+    , logger_(logger)
+    , slow_request_ms_(slow_request_ms)
+    , object_store_(std::move(storage_dir))
     , thread_pool_(worker_threads)
 {
     router_.addRoute(HttpMethod::Get, "/health", [](const HttpRequest&) {
@@ -59,13 +78,13 @@ bool HttpServer::start()
 {
     listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
-        std::cerr << "socket failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("socket"));
         return false;
     }
 
     int opt = 1;
     if (::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        std::cerr << "setsockopt failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("setsockopt"));
         return false;
     }
 
@@ -79,24 +98,24 @@ bool HttpServer::start()
     addr.sin_port = htons(port_);
 
     if (::bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        std::cerr << "bind failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("bind"));
         return false;
     }
 
     if (::listen(listen_fd_, kBacklog) < 0) {
-        std::cerr << "listen failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("listen"));
         return false;
     }
 
     epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ < 0) {
-        std::cerr << "epoll_create1 failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("epoll_create1"));
         return false;
     }
 
     wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (wake_fd_ < 0) {
-        std::cerr << "eventfd failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("eventfd"));
         return false;
     }
 
@@ -104,7 +123,7 @@ bool HttpServer::start()
     wake_event.events = EPOLLIN;
     wake_event.data.fd = wake_fd_;
     if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, wake_fd_, &wake_event) < 0) {
-        std::cerr << "epoll_ctl wake fd failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("epoll_ctl wake fd"));
         return false;
     }
 
@@ -112,12 +131,13 @@ bool HttpServer::start()
     event.events = EPOLLIN;
     event.data.fd = listen_fd_;
     if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd_, &event) < 0) {
-        std::cerr << "epoll_ctl listen fd failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("epoll_ctl listen fd"));
         return false;
     }
 
     std::cout << "Mini-OSS HTTP server listening on 0.0.0.0:" << port_ << '\n';
     std::cout << "Worker threads: " << thread_pool_.threadCount() << '\n';
+    logger_.info("server listening on port " + std::to_string(port_));
     return true;
 }
 
@@ -131,7 +151,7 @@ void HttpServer::run(const std::function<bool()>& keep_running)
             if (errno == EINTR) {
                 continue;
             }
-            std::cerr << "epoll_wait failed: " << std::strerror(errno) << '\n';
+            logServerError(socketError("epoll_wait"));
             break;
         }
 
@@ -201,7 +221,7 @@ void HttpServer::acceptClients()
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             }
-            std::cerr << "accept failed: " << std::strerror(errno) << '\n';
+            logServerError(socketError("accept"));
             break;
         }
 
@@ -209,12 +229,18 @@ void HttpServer::acceptClients()
         event.events = EPOLLIN | EPOLLRDHUP;
         event.data.fd = client_fd;
         if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &event) < 0) {
-            std::cerr << "epoll_ctl client fd failed: " << std::strerror(errno) << '\n';
+            logServerError(socketError("epoll_ctl client fd"));
             ::close(client_fd);
             continue;
         }
 
-        clients_[client_fd] = ClientState {{}, next_generation_++, false};
+        char addr_text[INET_ADDRSTRLEN] {};
+        const char* remote = ::inet_ntop(AF_INET, &client_addr.sin_addr, addr_text, sizeof(addr_text));
+        std::ostringstream remote_addr;
+        remote_addr << (remote == nullptr ? "unknown" : remote) << ':' << ntohs(client_addr.sin_port);
+
+        clients_[client_fd] =
+            ClientState {{}, remote_addr.str(), std::chrono::steady_clock::now(), next_generation_++, false};
     }
 }
 
@@ -243,17 +269,23 @@ void HttpServer::handleClientRead(int client_fd)
             const auto header_end = request.find("\r\n\r\n");
             if (header_end == std::string::npos && request.size() > kMaxHeaderSize) {
                 const auto response = HttpResponse::text(431, "Request Header Fields Too Large",
-                                                         "request header too large\n")
-                                          .serialize();
-                sendAll(client_fd, response);
+                                                         "request header too large\n");
+                const auto serialized = response.serialize();
+                const auto duration_ms = elapsedMs(client_it->second.started_at);
+                sendAll(client_fd, serialized);
+                logAccess(client_it->second.remote_addr, "-", "-", response.statusCode(), serialized.size(),
+                          duration_ms);
                 closeClient(client_fd);
                 return;
             }
             if (request.size() > kMaxRequestSize) {
                 const auto response = HttpResponse::text(413, "Payload Too Large",
-                                                         "request body too large\n")
-                                          .serialize();
-                sendAll(client_fd, response);
+                                                         "request body too large\n");
+                const auto serialized = response.serialize();
+                const auto duration_ms = elapsedMs(client_it->second.started_at);
+                sendAll(client_fd, serialized);
+                logAccess(client_it->second.remote_addr, "-", "-", response.statusCode(), serialized.size(),
+                          duration_ms);
                 closeClient(client_fd);
                 return;
             }
@@ -269,7 +301,7 @@ void HttpServer::handleClientRead(int client_fd)
             break;
         }
 
-        std::cerr << "recv failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("recv"));
         closeClient(client_fd);
         return;
     }
@@ -280,37 +312,52 @@ void HttpServer::handleClientRead(int client_fd)
     }
 
     const std::uint64_t generation = client_it->second.generation;
+    const std::string remote_addr = client_it->second.remote_addr;
+    const auto started_at = client_it->second.started_at;
     client_it->second.processing = true;
 
     epoll_event event {};
     event.events = EPOLLRDHUP;
     event.data.fd = client_fd;
     if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, client_fd, &event) < 0) {
-        std::cerr << "epoll_ctl disable read failed: " << std::strerror(errno) << '\n';
+        logServerError(socketError("epoll_ctl disable read"));
         closeClient(client_fd);
         return;
     }
 
-    submitRequest(client_fd, generation, std::move(request));
+    submitRequest(client_fd, generation, remote_addr, started_at, std::move(request));
 }
 
-void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::string raw_request)
+void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::string remote_addr,
+                               std::chrono::steady_clock::time_point started_at,
+                               std::string raw_request)
 {
-    const bool queued = thread_pool_.enqueue([this, client_fd, generation, raw_request = std::move(raw_request)] {
+    const bool queued = thread_pool_.enqueue([this, client_fd, generation, remote_addr = std::move(remote_addr),
+                                              started_at, raw_request = std::move(raw_request)] {
         const auto parse_result = parseHttpRequest(raw_request);
-        std::string response;
+        HttpResponse http_response = HttpResponse::badRequest("invalid request");
+        std::string method = "-";
+        std::string path = "-";
         if (!parse_result.complete || !parse_result.ok) {
             const std::string error = parse_result.error.empty() ? "invalid request" : parse_result.error;
-            response = HttpResponse::badRequest(error).serialize();
+            http_response = HttpResponse::badRequest(error);
         } else {
-            response = router_.route(parse_result.request).serialize();
+            method = httpMethodName(parse_result.request.method);
+            path = parse_result.request.path;
+            http_response = router_.route(parse_result.request);
         }
-        enqueueResponse(client_fd, generation, std::move(response));
+
+        const auto serialized = http_response.serialize();
+        const auto duration_ms = elapsedMs(started_at);
+        logAccess(remote_addr, method, path, http_response.statusCode(), serialized.size(), duration_ms);
+        enqueueResponse(client_fd, generation, std::move(serialized));
     });
 
     if (!queued) {
-        enqueueResponse(client_fd, generation,
-                        HttpResponse::text(503, "Service Unavailable", "server shutting down\n").serialize());
+        const auto response = HttpResponse::text(503, "Service Unavailable", "server shutting down\n");
+        const auto serialized = response.serialize();
+        logAccess(remote_addr, "-", "-", response.statusCode(), serialized.size(), elapsedMs(started_at));
+        enqueueResponse(client_fd, generation, serialized);
     }
 }
 
@@ -357,6 +404,22 @@ void HttpServer::closeClient(int client_fd)
     }
     clients_.erase(client_fd);
     ::close(client_fd);
+}
+
+void HttpServer::logServerError(const std::string& message)
+{
+    std::cerr << message << '\n';
+    logger_.error(message);
+}
+
+void HttpServer::logAccess(const std::string& remote, const std::string& method,
+                           const std::string& path, int status_code,
+                           std::size_t response_bytes, std::uint64_t duration_ms)
+{
+    logger_.access(remote, method, path, status_code, response_bytes, duration_ms);
+    if (duration_ms >= slow_request_ms_) {
+        logger_.slow(remote, method, path, status_code, duration_ms);
+    }
 }
 
 bool HttpServer::setNonBlocking(int fd)

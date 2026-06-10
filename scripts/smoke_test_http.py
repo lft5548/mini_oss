@@ -60,9 +60,20 @@ def upload_parallel(index: int) -> str:
 
 
 def main() -> int:
-    shutil.rmtree(Path("storage"), ignore_errors=True)
+    storage_dir = Path("tmp/smoke_storage")
+    log_dir = Path("tmp/smoke_logs")
+    config_path = Path("tmp/smoke_config.ini")
+    shutil.rmtree(storage_dir, ignore_errors=True)
+    shutil.rmtree(log_dir, ignore_errors=True)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "[server]\nport = 18080\nthreads = 2\nslow_request_ms = 0\n\n"
+        "[storage]\ndir = tmp/smoke_storage\n\n"
+        "[logging]\ndir = tmp/smoke_logs\n",
+        encoding="utf-8",
+    )
 
-    proc = start_server()
+    proc = start_server(config_path)
 
     try:
         health = request("/health")
@@ -84,7 +95,7 @@ def main() -> int:
         download = request(f"/objects/{object_id}")
         stop_server(proc)
 
-        proc = start_server()
+        proc = start_server(config_path)
         restarted_listing = request("/objects")
         restarted_download = request(f"/objects/{object_id}")
 
@@ -121,6 +132,15 @@ def main() -> int:
     print(out)
     print("=== server stderr ===")
     print(err)
+    access_log = log_dir / "access.log"
+    error_log = log_dir / "error.log"
+    slow_log = log_dir / "slow.log"
+    print("=== access.log ===")
+    print(access_log.read_text(encoding="utf-8") if access_log.exists() else "")
+    print("=== error.log ===")
+    print(error_log.read_text(encoding="utf-8") if error_log.exists() else "")
+    print("=== slow.log ===")
+    print(slow_log.read_text(encoding="utf-8") if slow_log.exists() else "")
 
     if "HTTP/1.1 200 OK" not in health or '{"status":"ok"}' not in health:
         print("health check failed", file=sys.stderr)
@@ -165,12 +185,30 @@ def main() -> int:
     if "HTTP/1.1 404 Not Found" not in deleted_download:
         print("deleted object 404 check failed", file=sys.stderr)
         return 1
+    access_text = access_log.read_text(encoding="utf-8") if access_log.exists() else ""
+    error_text = error_log.read_text(encoding="utf-8") if error_log.exists() else ""
+    slow_text = slow_log.read_text(encoding="utf-8") if slow_log.exists() else ""
+    if "method=GET path=/health status=200" not in access_text:
+        print("access log health entry missing", file=sys.stderr)
+        return 1
+    if "method=POST path=/objects status=201" not in access_text:
+        print("access log upload entry missing", file=sys.stderr)
+        return 1
+    if "method=GET path=/not-found status=404" not in access_text:
+        print("access log 404 entry missing", file=sys.stderr)
+        return 1
+    if "level=INFO" not in error_text:
+        print("error log info entry missing", file=sys.stderr)
+        return 1
+    if "duration_ms=" not in slow_text:
+        print("slow log entry missing", file=sys.stderr)
+        return 1
     return 0
 
 
-def start_server() -> subprocess.Popen[str]:
+def start_server(config_path: Path) -> subprocess.Popen[str]:
     proc = subprocess.Popen(
-        ["./build/mini_oss", "--port", "18080", "--threads", "4"],
+        ["./build/mini_oss", "--config", str(config_path), "--threads", "4"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

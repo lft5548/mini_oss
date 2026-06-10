@@ -9,7 +9,7 @@ HTTP API
   |
 HttpServer / Router
   |
-FileService / UserService / MetricsService
+Config / Logger / FileService / UserService / MetricsService
   |
 MetadataStore / ObjectStore / Logger
   |
@@ -55,11 +55,19 @@ Linux File System / SQLite / Redis(optional)
 - Current implementation uses SQLite and stores metadata in `storage/metadata.db`.
 - SQLite WAL mode is enabled for the local single-node metadata store.
 
+### Config
+
+- Load simple INI-style config files.
+- Support `server`, `storage`, and `logging` sections.
+- Command-line options override config-file values.
+- Current configurable values: port, worker threads, storage directory, log directory, slow request threshold.
+
 ### Logging
 
-- Access log.
-- Error log.
-- Slow request log.
+- Thread-safe file logger.
+- `access.log` records remote address, method, path, status code, response bytes, and latency.
+- `error.log` records startup/shutdown events and server-side errors.
+- `slow.log` records requests whose latency reaches the configured threshold.
 
 ### Metrics
 

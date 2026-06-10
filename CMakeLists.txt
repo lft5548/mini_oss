@@ -16,8 +16,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(mini_oss
     src/main.cpp
+    src/config.cpp
     src/http.cpp
     src/http_server.cpp
+    src/logger.cpp
     src/metadata_store.cpp
     src/object_store.cpp
     src/router.cpp

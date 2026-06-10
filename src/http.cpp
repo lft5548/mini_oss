@@ -92,6 +92,16 @@ HttpResponse HttpResponse::methodNotAllowed()
     return text(405, "Method Not Allowed", "method not allowed\n");
 }
 
+int HttpResponse::statusCode() const
+{
+    return status_code_;
+}
+
+std::size_t HttpResponse::bodySize() const
+{
+    return body_.size();
+}
+
 std::string HttpResponse::serialize() const
 {
     std::ostringstream oss;

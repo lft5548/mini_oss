@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <unordered_map>
 
@@ -31,6 +32,8 @@ public:
     static HttpResponse notFound();
     static HttpResponse methodNotAllowed();
 
+    int statusCode() const;
+    std::size_t bodySize() const;
     std::string serialize() const;
 
 private:
