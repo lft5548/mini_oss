@@ -16,7 +16,8 @@ sudo apt install -y \
   libssl-dev \
   sqlite3 \
   libsqlite3-dev \
-  apache2-utils
+  apache2-utils \
+  wrk
 
 echo "Base dependencies installed."
 echo "Optional later:"

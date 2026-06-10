@@ -10,3 +10,5 @@ storage/
 .cache/
 .vscode/
 tmp/
+__pycache__/
+scripts/__pycache__/

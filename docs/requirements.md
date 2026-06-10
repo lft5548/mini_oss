@@ -49,6 +49,7 @@ Current MVP status:
 - Access/error/slow request logs: done.
 - `/metrics` runtime monitoring endpoint: done.
 - Token authentication for object APIs: done.
+- Benchmark script and ab/wrk report: done.
 
 Known limitations before the next phase:
 
@@ -73,7 +74,7 @@ After MVP, add:
 - Chunked upload and merge.
 - Range download.
 - Metrics endpoint: QPS, active connections, error count, average latency.
-- Benchmark report using ab or wrk.
+- Benchmark report using ab and wrk.
 
 ## Non-Goals
 

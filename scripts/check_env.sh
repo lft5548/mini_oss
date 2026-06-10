@@ -13,6 +13,7 @@ tools=(
   openssl
   sqlite3
   ab
+  wrk
   pkg-config
 )
 

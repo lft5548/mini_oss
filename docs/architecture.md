@@ -85,6 +85,12 @@ Linux File System / SQLite / Redis(optional)
 - Count active connections, total requests, success/failure requests, request bytes, response bytes, total latency, and average latency.
 - `HttpServer` updates metrics when a request completes and exposes them through `GET /metrics`.
 
+### Benchmarking
+
+- `scripts/benchmark_http.py` starts a local Mini-OSS instance and drives benchmark cases through ab and wrk.
+- ab is used for fixed request-count tests, while wrk is used for fixed-duration throughput and latency distribution tests.
+- The generated `docs/benchmark.md` records commands, QPS, mean latency, percentile latency, failure count, transfer rate, raw tool output, and a `/metrics` snapshot.
+
 ## MVP API Draft
 
 ```text

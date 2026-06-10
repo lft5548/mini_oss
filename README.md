@@ -71,6 +71,7 @@ The current MVP supports:
 - optional Token authentication for object APIs
 - SHA-256 object integrity metadata
 - content deduplication and instant upload based on SHA-256
+- repeatable benchmark report generated with ab and wrk
 - SQLite metadata persistence under `storage/metadata.db`
 
 ## Smoke Test
@@ -93,6 +94,17 @@ Expected checks:
 - `access.log`, `error.log`, and `slow.log` are generated
 - `/metrics` exposes runtime counters for requests, status results, bytes, latency, and active connections
 - object APIs return `401 Unauthorized` when auth token is configured and missing
+
+## Benchmark
+
+Mini-OSS includes a repeatable benchmark driver based on ApacheBench and wrk. The script starts a local server, uploads a seed object, runs read/write benchmark cases, fetches `/metrics`, and writes a Markdown report.
+
+```bash
+cmake --build build
+./scripts/benchmark_http.py
+```
+
+The generated report is written to `docs/benchmark.md` and includes QPS, mean latency, percentile latency, failure count, transfer rate, raw ab/wrk output, and a metrics snapshot.
 
 ## Authentication
 
