@@ -43,12 +43,13 @@ Linux File System / SQLite / Redis(optional)
 - Generate object IDs.
 - Support download, list, and delete.
 - Verify SHA-256 integrity.
-- Current MVP stores object metadata in memory and stores object files under `storage/objects`.
+- Current MVP stores object files under `storage/objects` and persists metadata through SQLite.
 
 ### Metadata Store
 
 - Store object metadata: id, filename, path, size, sha256, owner, created_at.
-- MVP uses SQLite.
+- Current implementation uses SQLite and stores metadata in `storage/metadata.db`.
+- SQLite WAL mode is enabled for the local single-node metadata store.
 
 ### Logging
 

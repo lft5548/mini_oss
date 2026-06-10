@@ -49,12 +49,13 @@ The current MVP supports:
 - `GET /health`
 - `404 Not Found` for unknown GET paths
 - `POST /objects` upload an object body
-- `GET /objects` list in-memory object metadata
+- `GET /objects` list persisted object metadata
 - `GET /objects/{id}` download an object
 - `DELETE /objects/{id}` delete an object
 - Linux socket + non-blocking listening socket
 - epoll event loop
 - SHA-256 object integrity metadata
+- SQLite metadata persistence under `storage/metadata.db`
 
 ## Smoke Test
 
@@ -67,6 +68,7 @@ Expected checks:
 - `/health` returns `HTTP/1.1 200 OK`
 - `/not-found` returns `HTTP/1.1 404 Not Found`
 - object upload/list/download/delete flow passes
+- object metadata survives a service restart
 
 ## Example Object APIs
 

@@ -40,13 +40,14 @@ Current MVP status:
 - `GET /objects/{id}`: done.
 - `DELETE /objects/{id}`: done.
 - SHA-256 object metadata: done.
+- SQLite metadata persistence: done.
 
 Known limitations before the next phase:
 
-- Metadata is stored in memory and will be lost after restart.
 - File upload currently accepts the full HTTP body in memory.
 - No user authentication yet.
 - No thread pool yet; request handling still runs in the event loop.
+- No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.
 
 ## Advanced Scope
 

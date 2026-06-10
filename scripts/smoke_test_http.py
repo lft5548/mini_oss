@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import json
+import shutil
 import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 def request(
@@ -45,13 +47,9 @@ def response_body(response: str) -> str:
 
 
 def main() -> int:
-    proc = subprocess.Popen(
-        ["./build/mini_oss", "--port", "18080"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    time.sleep(0.8)
+    shutil.rmtree(Path("storage"), ignore_errors=True)
+
+    proc = start_server()
 
     try:
         health = request("/health")
@@ -68,15 +66,16 @@ def main() -> int:
         object_id = upload_body["id"]
         listing = request("/objects")
         download = request(f"/objects/{object_id}")
+        stop_server(proc)
+
+        proc = start_server()
+        restarted_listing = request("/objects")
+        restarted_download = request(f"/objects/{object_id}")
+
         delete = request(f"/objects/{object_id}", method="DELETE")
         deleted_download = request(f"/objects/{object_id}")
     finally:
-        proc.terminate()
-        try:
-            out, err = proc.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, err = proc.communicate(timeout=3)
+        out, err = stop_server(proc)
 
     print("=== /health ===")
     print(health)
@@ -92,6 +91,10 @@ def main() -> int:
     print(listing)
     print("=== GET /objects/{id} ===")
     print(download)
+    print("=== GET /objects after restart ===")
+    print(restarted_listing)
+    print("=== GET /objects/{id} after restart ===")
+    print(restarted_download)
     print("=== DELETE /objects/{id} ===")
     print(delete)
     print("=== GET deleted object ===")
@@ -122,6 +125,12 @@ def main() -> int:
     if "HTTP/1.1 200 OK" not in download or "hello mini oss" not in download:
         print("object download failed", file=sys.stderr)
         return 1
+    if "HTTP/1.1 200 OK" not in restarted_listing or object_id not in restarted_listing:
+        print("metadata persistence list check failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in restarted_download or "hello mini oss" not in restarted_download:
+        print("metadata persistence download check failed", file=sys.stderr)
+        return 1
     if "HTTP/1.1 200 OK" not in delete or '"deleted":true' not in delete:
         print("object delete failed", file=sys.stderr)
         return 1
@@ -129,6 +138,31 @@ def main() -> int:
         print("deleted object 404 check failed", file=sys.stderr)
         return 1
     return 0
+
+
+def start_server() -> subprocess.Popen[str]:
+    proc = subprocess.Popen(
+        ["./build/mini_oss", "--port", "18080"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    time.sleep(0.8)
+    return proc
+
+
+def stop_server(proc: subprocess.Popen[str]) -> tuple[str, str]:
+    if proc.poll() is not None:
+        out, err = proc.communicate(timeout=3)
+        return out, err
+
+    proc.terminate()
+    try:
+        out, err = proc.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate(timeout=3)
+    return out, err
 
 
 if __name__ == "__main__":

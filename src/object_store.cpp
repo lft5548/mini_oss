@@ -19,11 +19,53 @@ std::string headerOrDefault(const HttpRequest& request, const std::string& key,
     return it == request.headers.end() || it->second.empty() ? default_value : it->second;
 }
 
+std::string jsonEscape(const std::string& value)
+{
+    std::ostringstream oss;
+    for (char ch : value) {
+        switch (ch) {
+        case '\\':
+            oss << "\\\\";
+            break;
+        case '"':
+            oss << "\\\"";
+            break;
+        case '\n':
+            oss << "\\n";
+            break;
+        case '\r':
+            oss << "\\r";
+            break;
+        case '\t':
+            oss << "\\t";
+            break;
+        default:
+            oss << ch;
+            break;
+        }
+    }
+    return oss.str();
+}
+
+std::string objectInfoJson(const ObjectInfo& info)
+{
+    std::ostringstream body;
+    body << "{"
+         << "\"id\":\"" << jsonEscape(info.id) << "\","
+         << "\"filename\":\"" << jsonEscape(info.filename) << "\","
+         << "\"size\":" << info.size << ","
+         << "\"sha256\":\"" << info.sha256 << "\","
+         << "\"created_at\":\"" << info.created_at << "\""
+         << "}";
+    return body.str();
+}
+
 } // namespace
 
 ObjectStore::ObjectStore(std::filesystem::path root_dir)
     : root_dir_(std::move(root_dir))
     , object_dir_(root_dir_ / "objects")
+    , metadata_store_(root_dir_ / "metadata.db")
 {
     std::filesystem::create_directories(object_dir_);
 }
@@ -34,11 +76,14 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
         return HttpResponse::badRequest("empty object body");
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::string error;
+    const auto id = metadata_store_.nextObjectId(error);
+    if (!id.has_value()) {
+        return HttpResponse::text(500, "Internal Server Error", "cannot allocate object id: " + error + "\n");
+    }
 
-    const std::string id = std::to_string(next_id_++);
-    const std::string filename = sanitizeFilename(headerOrDefault(request, "x-filename", "object_" + id));
-    const std::filesystem::path path = object_dir_ / id;
+    const std::string filename = sanitizeFilename(headerOrDefault(request, "x-filename", "object_" + id.value()));
+    const std::filesystem::path path = object_dir_ / id.value();
 
     std::ofstream out(path, std::ios::binary);
     if (!out) {
@@ -50,45 +95,39 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
     }
 
     ObjectInfo info;
-    info.id = id;
+    info.id = id.value();
     info.filename = filename;
     info.path = path;
     info.size = request.body.size();
     info.sha256 = sha256Hex(request.body);
     info.created_at = now();
-    objects_[id] = info;
 
-    std::ostringstream body;
-    body << "{"
-         << "\"id\":\"" << jsonEscape(info.id) << "\","
-         << "\"filename\":\"" << jsonEscape(info.filename) << "\","
-         << "\"size\":" << info.size << ","
-         << "\"sha256\":\"" << info.sha256 << "\","
-         << "\"created_at\":\"" << info.created_at << "\""
-         << "}\n";
-    return HttpResponse::json(201, "Created", body.str());
+    if (!metadata_store_.insertObject(info, error)) {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        return HttpResponse::text(500, "Internal Server Error", "cannot save object metadata: " + error + "\n");
+    }
+
+    return HttpResponse::json(201, "Created", objectInfoJson(info) + "\n");
 }
 
 HttpResponse ObjectStore::listObjects(const HttpRequest&)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::string error;
+    const auto objects = metadata_store_.listObjects(error);
+    if (!error.empty()) {
+        return HttpResponse::text(500, "Internal Server Error", "cannot list object metadata: " + error + "\n");
+    }
 
     std::ostringstream body;
     body << "{\"objects\":[";
     bool first = true;
-    for (const auto& item : objects_) {
-        const auto& info = item.second;
+    for (const auto& info : objects) {
         if (!first) {
             body << ',';
         }
         first = false;
-        body << "{"
-             << "\"id\":\"" << jsonEscape(info.id) << "\","
-             << "\"filename\":\"" << jsonEscape(info.filename) << "\","
-             << "\"size\":" << info.size << ","
-             << "\"sha256\":\"" << info.sha256 << "\","
-             << "\"created_at\":\"" << info.created_at << "\""
-             << "}";
+        body << objectInfoJson(info);
     }
     body << "]}\n";
     return HttpResponse::json(200, "OK", body.str());
@@ -101,17 +140,18 @@ HttpResponse ObjectStore::getObject(const HttpRequest& request)
         return HttpResponse::badRequest("missing object id");
     }
 
-    ObjectInfo info;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto it = objects_.find(id);
-        if (it == objects_.end()) {
-            return HttpResponse::notFound();
-        }
-        info = it->second;
+    std::string error;
+    const auto info = metadata_store_.getObject(id, error);
+    if (!error.empty()) {
+        return error == "invalid object id" ? HttpResponse::badRequest(error)
+                                            : HttpResponse::text(500, "Internal Server Error",
+                                                                 "cannot get object metadata: " + error + "\n");
+    }
+    if (!info.has_value()) {
+        return HttpResponse::notFound();
     }
 
-    std::ifstream in(info.path, std::ios::binary);
+    std::ifstream in(info->path, std::ios::binary);
     if (!in) {
         return HttpResponse::text(500, "Internal Server Error", "cannot open object file\n");
     }
@@ -127,19 +167,25 @@ HttpResponse ObjectStore::deleteObject(const HttpRequest& request)
         return HttpResponse::badRequest("missing object id");
     }
 
-    std::filesystem::path path;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto it = objects_.find(id);
-        if (it == objects_.end()) {
-            return HttpResponse::notFound();
-        }
-        path = it->second.path;
-        objects_.erase(it);
+    std::string error;
+    const auto info = metadata_store_.getObject(id, error);
+    if (!error.empty()) {
+        return error == "invalid object id" ? HttpResponse::badRequest(error)
+                                            : HttpResponse::text(500, "Internal Server Error",
+                                                                 "cannot get object metadata: " + error + "\n");
+    }
+    if (!info.has_value()) {
+        return HttpResponse::notFound();
+    }
+
+    if (!metadata_store_.deleteObject(id, error)) {
+        return error == "invalid object id" ? HttpResponse::badRequest(error)
+                                            : HttpResponse::text(500, "Internal Server Error",
+                                                                 "cannot delete object metadata: " + error + "\n");
     }
 
     std::error_code ec;
-    std::filesystem::remove(path, ec);
+    std::filesystem::remove(info->path, ec);
     if (ec) {
         return HttpResponse::text(500, "Internal Server Error", "cannot delete object file\n");
     }
@@ -178,34 +224,6 @@ std::string ObjectStore::sha256Hex(const std::string& data)
     std::ostringstream oss;
     for (unsigned char byte : hash) {
         oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
-    }
-    return oss.str();
-}
-
-std::string ObjectStore::jsonEscape(const std::string& value)
-{
-    std::ostringstream oss;
-    for (char ch : value) {
-        switch (ch) {
-        case '\\':
-            oss << "\\\\";
-            break;
-        case '"':
-            oss << "\\\"";
-            break;
-        case '\n':
-            oss << "\\n";
-            break;
-        case '\r':
-            oss << "\\r";
-            break;
-        case '\t':
-            oss << "\\t";
-            break;
-        default:
-            oss << ch;
-            break;
-        }
     }
     return oss.str();
 }
