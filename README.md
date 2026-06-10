@@ -44,4 +44,20 @@ cmake --build build
 ./build/mini_oss --config config.ini
 ```
 
-The current repository is only the initial scaffold. Implementation will be added feature by feature.
+The current MVP supports:
+
+- `GET /health`
+- `404 Not Found` for unknown GET paths
+- Linux socket + non-blocking listening socket
+- epoll event loop
+
+## Smoke Test
+
+```bash
+./scripts/smoke_test_http.py
+```
+
+Expected checks:
+
+- `/health` returns `HTTP/1.1 200 OK`
+- `/not-found` returns `HTTP/1.1 404 Not Found`

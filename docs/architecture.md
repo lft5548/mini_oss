@@ -24,6 +24,7 @@ Linux File System / SQLite / Redis(optional)
 - Set socket to non-blocking mode.
 - Use epoll to monitor readable/writable events.
 - Manage connection lifecycle.
+- Current MVP uses a single epoll event loop and closes each HTTP connection after sending the response.
 
 ### HTTP
 
@@ -71,4 +72,16 @@ GET    /objects
 GET    /objects/{id}
 DELETE /objects/{id}
 GET    /metrics
+```
+
+## Implemented API
+
+```text
+GET /health
+```
+
+Response:
+
+```json
+{"status":"ok"}
 ```

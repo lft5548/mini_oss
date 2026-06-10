@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(mini_oss
     src/main.cpp
+    src/http_server.cpp
 )
 
 target_include_directories(mini_oss PRIVATE

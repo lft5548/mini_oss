@@ -29,6 +29,13 @@ The first version should support:
 - Delete a file.
 - Log access and error events.
 
+Current MVP status:
+
+- Server startup on configurable port: done.
+- Basic HTTP GET parsing: done.
+- `GET /health`: done.
+- 404 response for unknown GET paths: done.
+
 ## Advanced Scope
 
 After MVP, add:
