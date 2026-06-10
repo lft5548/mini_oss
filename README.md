@@ -51,7 +51,9 @@ Command-line options override the config file:
 ./build/mini_oss --config config.ini --port 8080 --threads 4 \
   --storage-dir storage --log-dir logs --slow-request-ms 200 \
   --max-request-bytes 10485760 --max-upload-bytes 134217728 \
-  --stream-upload-threshold-bytes 1048576 --auth-token dev-token
+  --stream-upload-threshold-bytes 1048576 --max-connections 1024 \
+  --thread-queue-limit 1024 --request-timeout-ms 5000 \
+  --upload-timeout-ms 30000 --auth-token dev-token
 ```
 
 The current MVP supports:
@@ -76,6 +78,7 @@ The current MVP supports:
 - repeatable benchmark report generated with ab and wrk
 - configurable upload size limits and stream-upload threshold
 - large `POST /objects` request bodies streamed to `storage/tmp_uploads` before metadata processing
+- resource guards for max connections, worker queue length, slow request timeout, and slow upload timeout
 - SQLite metadata persistence under `storage/metadata.db`
 
 ## Smoke Test
@@ -98,6 +101,8 @@ Expected checks:
 - config file startup and command-line thread override work
 - large upload can exceed the normal in-memory request limit and still complete through the streaming path
 - temporary upload files are cleaned after success or deduplication
+- slow/incomplete HTTP requests and uploads return `408 Request Timeout`
+- connection overflow returns `503 Service Unavailable`
 - `access.log`, `error.log`, and `slow.log` are generated
 - `/metrics` exposes runtime counters for requests, status results, bytes, latency, and active connections
 - object APIs return `401 Unauthorized` when auth token is configured and missing
@@ -131,6 +136,17 @@ The related resource controls are:
 - `max_request_bytes`: maximum size for regular in-memory HTTP requests.
 - `max_upload_bytes`: maximum accepted object upload size.
 - `stream_upload_threshold_bytes`: threshold for switching `POST /objects` to the file-backed upload path.
+
+## Resource Guards
+
+Mini-OSS exposes defensive limits that are common in backend services:
+
+- `max_connections`: maximum active client connections accepted by the event loop.
+- `thread_queue_limit`: maximum queued tasks waiting for worker threads. `0` means unlimited.
+- `request_timeout_ms`: idle timeout for incomplete HTTP headers or normal request bodies. `0` disables it.
+- `upload_timeout_ms`: idle timeout for file-backed large uploads. `0` disables it.
+
+Timed-out clients receive `408 Request Timeout`; connection overload or a full worker queue returns `503 Service Unavailable`.
 
 
 ```bash

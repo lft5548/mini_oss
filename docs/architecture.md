@@ -28,6 +28,8 @@ Linux File System / SQLite / Redis(optional)
 - For large `POST /objects` bodies, the event loop parses headers first and streams the body into `storage/tmp_uploads` instead of keeping the whole body in memory.
 - Completed file-backed upload requests pass a temporary file path to the worker, while small requests keep the existing in-memory body path.
 - Completed requests are dispatched to the worker thread pool.
+- The event loop enforces max active connections and periodically closes idle incomplete requests or uploads.
+- Timeout cleanup reuses the connection lifecycle path, so unfinished upload temporary files are removed.
 - Worker responses wake the event loop through eventfd, and the current version closes each HTTP connection after sending the response.
 
 ### HTTP
@@ -42,6 +44,7 @@ Linux File System / SQLite / Redis(optional)
 - Execute HTTP routing, object storage, and metadata tasks outside the epoll loop.
 - Keep the IO event loop responsive while file and SQLite operations are running.
 - Use a fixed worker count derived from hardware concurrency by default, with `--threads` for manual tuning.
+- Bound the pending task queue with `thread_queue_limit`; when the queue is full, new requests fail fast with `503`.
 
 ### Object Store
 
@@ -77,7 +80,8 @@ Linux File System / SQLite / Redis(optional)
 - Support `server`, `storage`, and `logging` sections.
 - Command-line options override config-file values.
 - Current configurable values: port, worker threads, storage directory, log directory, slow request threshold,
-  in-memory request limit, upload size limit, stream-upload threshold, and auth token.
+  connection limit, thread queue limit, request/upload timeout, in-memory request limit, upload size limit,
+  stream-upload threshold, and auth token.
 
 ### Logging
 

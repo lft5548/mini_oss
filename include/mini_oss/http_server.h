@@ -24,7 +24,10 @@ public:
                Logger& logger, std::uint64_t slow_request_ms = 200, std::string auth_token = {},
                std::size_t max_request_bytes = 10 * 1024 * 1024,
                std::size_t max_upload_bytes = 128 * 1024 * 1024,
-               std::size_t stream_upload_threshold_bytes = 1024 * 1024);
+               std::size_t stream_upload_threshold_bytes = 1024 * 1024,
+               std::size_t max_connections = 1024, std::size_t thread_queue_limit = 1024,
+               std::uint64_t request_timeout_ms = 5000,
+               std::uint64_t upload_timeout_ms = 30000);
     ~HttpServer();
 
     HttpServer(const HttpServer&) = delete;
@@ -42,6 +45,7 @@ private:
         std::string buffer;
         std::string remote_addr;
         std::chrono::steady_clock::time_point started_at;
+        std::chrono::steady_clock::time_point last_activity_at;
         std::uint64_t generation = 0;
         bool processing = false;
         bool header_parsed = false;
@@ -67,6 +71,7 @@ private:
     void enqueueResponse(int client_fd, std::uint64_t generation, std::string response);
     void sendCompletedResponses();
     void closeClient(int client_fd);
+    void closeTimedOutClients();
     void logServerError(const std::string& message);
     void sendImmediateResponse(int client_fd, const HttpResponse& response,
                                const std::string& method, const std::string& path,
@@ -99,10 +104,13 @@ private:
     Metrics metrics_;
     std::uint64_t slow_request_ms_ = 200;
     std::string auth_token_;
+    std::size_t max_connections_ = 1024;
     std::filesystem::path upload_tmp_dir_;
     std::size_t max_request_bytes_ = 10 * 1024 * 1024;
     std::size_t max_upload_bytes_ = 128 * 1024 * 1024;
     std::size_t stream_upload_threshold_bytes_ = 1024 * 1024;
+    std::uint64_t request_timeout_ms_ = 5000;
+    std::uint64_t upload_timeout_ms_ = 30000;
     ObjectStore object_store_;
     Router router_;
     ThreadPool thread_pool_;

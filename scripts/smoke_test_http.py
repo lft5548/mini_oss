@@ -16,9 +16,10 @@ def request(
     body: bytes = b"",
     headers: dict[str, str] | None = None,
     raw_request: bytes | None = None,
+    port: int = 18080,
 ) -> str:
-    with socket.create_connection(("127.0.0.1", 18080), timeout=3) as sock:
-        sock.settimeout(3)
+    with socket.create_connection(("127.0.0.1", port), timeout=4) as sock:
+        sock.settimeout(4)
         if raw_request is None:
             header_lines = [
                 f"{method} {path} HTTP/1.1",
@@ -63,6 +64,98 @@ def upload_parallel(index: int) -> str:
     return json.loads(response_body(response))["id"]
 
 
+def read_socket_response(sock: socket.socket, timeout: float = 3.0) -> str:
+    sock.settimeout(timeout)
+    chunks: list[bytes] = []
+    while True:
+        try:
+            data = sock.recv(4096)
+        except socket.timeout:
+            break
+        if not data:
+            break
+        chunks.append(data)
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+def start_resource_guard_server(config_path: Path) -> subprocess.Popen[str]:
+    proc = subprocess.Popen(
+        ["./build/mini_oss", "--config", str(config_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    time.sleep(0.8)
+    return proc
+
+
+def run_resource_guard_checks() -> dict[str, object]:
+    port = 18082
+    storage_dir = Path("tmp/resource_guard_storage")
+    log_dir = Path("tmp/resource_guard_logs")
+    config_path = Path("tmp/resource_guard_config.ini")
+    shutil.rmtree(storage_dir, ignore_errors=True)
+    shutil.rmtree(log_dir, ignore_errors=True)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "[server]\n"
+        f"port = {port}\n"
+        "threads = 1\n"
+        "slow_request_ms = 0\n"
+        "max_request_bytes = 4096\n"
+        "max_upload_bytes = 2097152\n"
+        "stream_upload_threshold_bytes = 1024\n"
+        "max_connections = 1\n"
+        "thread_queue_limit = 1\n"
+        "request_timeout_ms = 600\n"
+        "upload_timeout_ms = 600\n\n"
+        "[storage]\ndir = tmp/resource_guard_storage\n\n"
+        "[logging]\ndir = tmp/resource_guard_logs\n\n"
+        "[auth]\ntoken = smoke-token\n",
+        encoding="utf-8",
+    )
+
+    proc = start_resource_guard_server(config_path)
+    results: dict[str, object] = {}
+    try:
+        results["health"] = request("/health", port=port)
+
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as hold:
+            hold.settimeout(3)
+            time.sleep(0.1)
+            with socket.create_connection(("127.0.0.1", port), timeout=3) as overflow:
+                results["max_connections"] = read_socket_response(overflow)
+        time.sleep(0.3)
+
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as slow_header:
+            slow_header.sendall(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1")
+            time.sleep(0.9)
+            results["slow_header"] = read_socket_response(slow_header)
+        time.sleep(0.2)
+
+        upload_head = (
+            "POST /objects HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Authorization: Bearer smoke-token\r\n"
+            "X-Filename: slow-upload.bin\r\n"
+            "Content-Length: 2048\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as slow_upload:
+            slow_upload.sendall(upload_head + b"data")
+            time.sleep(0.9)
+            results["slow_upload"] = read_socket_response(slow_upload)
+        time.sleep(0.2)
+        results["tmp_upload_files"] = sorted(
+            str(path) for path in (storage_dir / "tmp_uploads").glob("*.tmp")
+        )
+    finally:
+        out, err = stop_server(proc)
+        results["stdout"] = out
+        results["stderr"] = err
+    return results
+
+
 def main() -> int:
     storage_dir = Path("tmp/smoke_storage")
     log_dir = Path("tmp/smoke_logs")
@@ -73,7 +166,11 @@ def main() -> int:
     config_path.write_text(
         "[server]\nport = 18080\nthreads = 2\nslow_request_ms = 0\n"
         "max_request_bytes = 4096\nmax_upload_bytes = 2097152\n"
-        "stream_upload_threshold_bytes = 1024\n\n"
+        "stream_upload_threshold_bytes = 1024\n"
+        "max_connections = 32\n"
+        "thread_queue_limit = 64\n"
+        "request_timeout_ms = 2000\n"
+        "upload_timeout_ms = 5000\n\n"
         "[storage]\ndir = tmp/smoke_storage\n\n"
         "[logging]\ndir = tmp/smoke_logs\n\n"
         "[auth]\ntoken = smoke-token\n",
@@ -200,6 +297,7 @@ def main() -> int:
         deleted_instant_download = request(f"/objects/{instant_id}", headers=AUTH_HEADERS)
         metrics = request("/metrics")
         metrics_body = json.loads(response_body(metrics))
+        resource_guard = run_resource_guard_checks()
     finally:
         out, err = stop_server(proc)
 
@@ -263,6 +361,16 @@ def main() -> int:
     print(metrics)
     print("=== parsed metrics ===")
     print(metrics_body)
+    print("=== resource guard health ===")
+    print(resource_guard["health"])
+    print("=== resource guard max connections ===")
+    print(resource_guard["max_connections"])
+    print("=== resource guard slow header ===")
+    print(resource_guard["slow_header"])
+    print("=== resource guard slow upload ===")
+    print(resource_guard["slow_upload"])
+    print("=== resource guard tmp uploads ===")
+    print(resource_guard["tmp_upload_files"])
     print("=== server stdout ===")
     print(out)
     print("=== server stderr ===")
@@ -474,6 +582,24 @@ def main() -> int:
         return 1
     if metrics_body["request_bytes"] <= 0 or metrics_body["response_bytes"] <= 0:
         print("metrics byte counters invalid", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in resource_guard["health"]:
+        print("resource guard health check failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 503 Service Unavailable" not in resource_guard["max_connections"]:
+        print("max connection guard failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 408 Request Timeout" not in resource_guard["slow_header"]:
+        print("slow header timeout guard failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 408 Request Timeout" not in resource_guard["slow_upload"]:
+        print("slow upload timeout guard failed", file=sys.stderr)
+        return 1
+    if resource_guard["tmp_upload_files"]:
+        print(
+            f"timeout upload temp files were not cleaned: {resource_guard['tmp_upload_files']}",
+            file=sys.stderr,
+        )
         return 1
     access_text = access_log.read_text(encoding="utf-8") if access_log.exists() else ""
     error_text = error_log.read_text(encoding="utf-8") if error_log.exists() else ""

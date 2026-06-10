@@ -86,13 +86,21 @@ def write_config(
     max_request_bytes: int,
     max_upload_bytes: int,
     stream_upload_threshold_bytes: int,
+    max_connections: int,
+    thread_queue_limit: int,
+    request_timeout_ms: int,
+    upload_timeout_ms: int,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"[server]\nport = {port}\nthreads = {threads}\nslow_request_ms = 100\n"
         f"max_request_bytes = {max_request_bytes}\n"
         f"max_upload_bytes = {max_upload_bytes}\n"
-        f"stream_upload_threshold_bytes = {stream_upload_threshold_bytes}\n\n"
+        f"stream_upload_threshold_bytes = {stream_upload_threshold_bytes}\n"
+        f"max_connections = {max_connections}\n"
+        f"thread_queue_limit = {thread_queue_limit}\n"
+        f"request_timeout_ms = {request_timeout_ms}\n"
+        f"upload_timeout_ms = {upload_timeout_ms}\n\n"
         "[storage]\ndir = tmp/benchmark_storage\n\n"
         "[logging]\ndir = tmp/benchmark_logs\n\n"
         f"[auth]\ntoken = {AUTH_TOKEN}\n",
@@ -383,6 +391,10 @@ def render_report(
         f"- Max request bytes: {args.max_request_bytes}",
         f"- Max upload bytes: {args.max_upload_bytes}",
         f"- Stream upload threshold bytes: {args.stream_upload_threshold_bytes}",
+        f"- Max connections: {args.max_connections}",
+        f"- Thread queue limit: {args.thread_queue_limit}",
+        f"- Request timeout ms: {args.request_timeout_ms}",
+        f"- Upload timeout ms: {args.upload_timeout_ms}",
         "",
         "## Summary",
         "",
@@ -436,6 +448,7 @@ def render_report(
             "- `POST /objects/instant` validates SHA-256 lookup and SQLite metadata insertion without sending file content.",
             "- `POST /objects` sends an object body; repeated same-body requests also exercise the deduplication path.",
             "- When `object_size` is larger than `stream_upload_threshold_bytes`, upload cases also exercise the temporary-file streaming path.",
+            "- Resource guards are enabled during benchmark startup, so the report records the tested admission-control and timeout configuration.",
             "- `ab` provides fixed request-count results; `wrk` provides fixed-duration latency distribution and throughput.",
             "",
             "## Limitations",
@@ -495,6 +508,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-request-bytes", type=int, default=4096)
     parser.add_argument("--max-upload-bytes", type=int, default=2 * 1024 * 1024)
     parser.add_argument("--stream-upload-threshold-bytes", type=int, default=1024)
+    parser.add_argument("--max-connections", type=int, default=512)
+    parser.add_argument("--thread-queue-limit", type=int, default=1024)
+    parser.add_argument("--request-timeout-ms", type=int, default=5000)
+    parser.add_argument("--upload-timeout-ms", type=int, default=30000)
     parser.add_argument("--report", type=Path, default=Path("docs/benchmark.md"))
     return parser.parse_args()
 
@@ -532,6 +549,10 @@ def main() -> int:
         args.max_request_bytes,
         args.max_upload_bytes,
         args.stream_upload_threshold_bytes,
+        args.max_connections,
+        args.thread_queue_limit,
+        args.request_timeout_ms,
+        args.upload_timeout_ms,
     )
 
     proc = start_server(config_path, args.threads)

@@ -21,6 +21,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace mini_oss {
 namespace {
@@ -28,11 +29,13 @@ namespace {
 constexpr int kBacklog = 128;
 constexpr int kMaxEvents = 1024;
 constexpr std::uint64_t kWakeupValue = 1;
+constexpr int kEpollWaitMs = 100;
 constexpr int kBufferSize = 4096;
 constexpr std::size_t kMaxHeaderSize = 16 * 1024;
 constexpr std::size_t kDefaultMaxRequestSize = 10 * 1024 * 1024;
 constexpr std::size_t kDefaultMaxUploadSize = 128 * 1024 * 1024;
 constexpr std::size_t kDefaultStreamUploadThreshold = 1024 * 1024;
+constexpr std::size_t kDefaultMaxConnections = 1024;
 
 std::string socketError(const char* operation)
 {
@@ -78,18 +81,23 @@ HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
                        std::filesystem::path storage_dir, Logger& logger,
                        std::uint64_t slow_request_ms, std::string auth_token,
                        std::size_t max_request_bytes, std::size_t max_upload_bytes,
-                       std::size_t stream_upload_threshold_bytes)
+                       std::size_t stream_upload_threshold_bytes,
+                       std::size_t max_connections, std::size_t thread_queue_limit,
+                       std::uint64_t request_timeout_ms, std::uint64_t upload_timeout_ms)
     : port_(port)
     , logger_(logger)
     , slow_request_ms_(slow_request_ms)
     , auth_token_(std::move(auth_token))
+    , max_connections_(max_connections == 0 ? kDefaultMaxConnections : max_connections)
     , upload_tmp_dir_(storage_dir / "tmp_uploads")
     , max_request_bytes_(max_request_bytes == 0 ? kDefaultMaxRequestSize : max_request_bytes)
     , max_upload_bytes_(max_upload_bytes == 0 ? kDefaultMaxUploadSize : max_upload_bytes)
     , stream_upload_threshold_bytes_(
           stream_upload_threshold_bytes == 0 ? 0 : stream_upload_threshold_bytes)
+    , request_timeout_ms_(request_timeout_ms)
+    , upload_timeout_ms_(upload_timeout_ms)
     , object_store_(std::move(storage_dir))
-    , thread_pool_(worker_threads)
+    , thread_pool_(worker_threads, thread_queue_limit)
 {
     if (stream_upload_threshold_bytes_ > max_upload_bytes_) {
         stream_upload_threshold_bytes_ = max_upload_bytes_;
@@ -203,7 +211,7 @@ void HttpServer::run(const std::function<bool()>& keep_running)
     epoll_event events[kMaxEvents];
 
     while (keep_running()) {
-        const int n = ::epoll_wait(epoll_fd_, events, kMaxEvents, 1000);
+        const int n = ::epoll_wait(epoll_fd_, events, kMaxEvents, kEpollWaitMs);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -235,6 +243,8 @@ void HttpServer::run(const std::function<bool()>& keep_running)
                 closeClient(fd);
             }
         }
+
+        closeTimedOutClients();
     }
 
     sendCompletedResponses();
@@ -283,6 +293,22 @@ void HttpServer::acceptClients()
             break;
         }
 
+        char addr_text[INET_ADDRSTRLEN] {};
+        const char* remote = ::inet_ntop(AF_INET, &client_addr.sin_addr, addr_text, sizeof(addr_text));
+        std::ostringstream remote_addr;
+        remote_addr << (remote == nullptr ? "unknown" : remote) << ':' << ntohs(client_addr.sin_port);
+        const std::string remote_string = remote_addr.str();
+
+        if (max_connections_ > 0 && clients_.size() >= max_connections_) {
+            const auto response = HttpResponse::text(503, "Service Unavailable",
+                                                     "too many connections\n")
+                                      .serialize();
+            sendAll(client_fd, response);
+            logAccess(remote_string, "-", "-", 503, 0, response.size(), 0);
+            ::close(client_fd);
+            continue;
+        }
+
         epoll_event event {};
         event.events = EPOLLIN | EPOLLRDHUP;
         event.data.fd = client_fd;
@@ -292,14 +318,11 @@ void HttpServer::acceptClients()
             continue;
         }
 
-        char addr_text[INET_ADDRSTRLEN] {};
-        const char* remote = ::inet_ntop(AF_INET, &client_addr.sin_addr, addr_text, sizeof(addr_text));
-        std::ostringstream remote_addr;
-        remote_addr << (remote == nullptr ? "unknown" : remote) << ':' << ntohs(client_addr.sin_port);
-
         ClientState state;
-        state.remote_addr = remote_addr.str();
-        state.started_at = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        state.remote_addr = remote_string;
+        state.started_at = now;
+        state.last_activity_at = now;
         state.generation = next_generation_++;
         clients_.emplace(client_fd, std::move(state));
         metrics_.connectionOpened();
@@ -327,6 +350,7 @@ void HttpServer::handleClientRead(int client_fd)
     while (true) {
         const ssize_t n = ::recv(client_fd, buffer, sizeof(buffer), 0);
         if (n > 0) {
+            state.last_activity_at = std::chrono::steady_clock::now();
             if (state.streaming_upload) {
                 if (!writeStreamingUpload(state, buffer, static_cast<std::size_t>(n))) {
                     sendImmediateResponse(client_fd,
@@ -460,6 +484,7 @@ void HttpServer::handleClientRead(int client_fd)
                     return;
                 }
 
+                state.header_request = head_result.request;
                 state.header_parsed = true;
                 state.content_length = content_length.value();
                 state.request_bytes = static_cast<std::size_t>(request_bytes);
@@ -543,7 +568,7 @@ void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::str
 
     if (!queued) {
         cleanupTemporaryRequestBody(request);
-        const auto response = HttpResponse::text(503, "Service Unavailable", "server shutting down\n");
+        const auto response = HttpResponse::text(503, "Service Unavailable", "server busy\n");
         const auto serialized = response.serialize();
         logAccess(remote_addr, httpMethodName(request.method), request.path, response.statusCode(),
                   request_bytes, serialized.size(), elapsedMs(started_at));
@@ -599,6 +624,50 @@ void HttpServer::closeClient(int client_fd)
         metrics_.connectionClosed();
     }
     ::close(client_fd);
+}
+
+void HttpServer::closeTimedOutClients()
+{
+    if (clients_.empty() || (request_timeout_ms_ == 0 && upload_timeout_ms_ == 0)) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<int> timed_out_clients;
+    timed_out_clients.reserve(clients_.size());
+
+    for (const auto& item : clients_) {
+        const auto& state = item.second;
+        if (state.processing) {
+            continue;
+        }
+
+        const auto timeout_ms = state.streaming_upload ? upload_timeout_ms_ : request_timeout_ms_;
+        if (timeout_ms == 0) {
+            continue;
+        }
+
+        const auto idle_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - state.last_activity_at)
+                .count());
+        if (idle_ms >= timeout_ms) {
+            timed_out_clients.push_back(item.first);
+        }
+    }
+
+    for (int client_fd : timed_out_clients) {
+        const auto client_it = clients_.find(client_fd);
+        if (client_it == clients_.end()) {
+            continue;
+        }
+        const auto& state = client_it->second;
+        const std::string method = state.header_parsed ? httpMethodName(state.header_request.method) : "-";
+        const std::string path = state.header_parsed ? state.header_request.path : "-";
+        const auto request_bytes = state.request_bytes == 0 ? state.buffer.size() : state.request_bytes;
+        sendImmediateResponse(client_fd, HttpResponse::text(408, "Request Timeout",
+                                                            "request timeout\n"),
+                              method, path, request_bytes);
+    }
 }
 
 void HttpServer::logServerError(const std::string& message)

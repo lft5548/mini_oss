@@ -7,7 +7,8 @@
 
 namespace mini_oss {
 
-ThreadPool::ThreadPool(std::size_t thread_count)
+ThreadPool::ThreadPool(std::size_t thread_count, std::size_t max_queue_size)
+    : max_queue_size_(max_queue_size)
 {
     if (thread_count == 0) {
         thread_count = std::thread::hardware_concurrency();
@@ -34,7 +35,7 @@ bool ThreadPool::enqueue(Task task)
 {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (stopping_) {
+        if (stopping_ || (max_queue_size_ > 0 && tasks_.size() >= max_queue_size_)) {
             return false;
         }
         tasks_.push(std::move(task));

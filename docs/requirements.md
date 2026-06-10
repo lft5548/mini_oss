@@ -52,6 +52,7 @@ Current MVP status:
 - Token authentication for object APIs: done.
 - Benchmark script and ab/wrk report: done.
 - Large upload streaming with temporary files and incremental SHA-256: done.
+- Resource guards for connection count, worker queue length, request timeout, and upload timeout: done.
 
 Known limitations before the next phase:
 
@@ -62,6 +63,7 @@ Known limitations before the next phase:
 - Deduplication is single-node metadata deduplication; later versions can add content-addressed storage layout and garbage collection jobs.
 - No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.
 - Large response sending still happens in the event loop; later versions can add EPOLLOUT output buffers.
+- Queue-limit behavior is implemented as fail-fast admission control; later versions can expose rejected-task counters in `/metrics`.
 
 ## Advanced Scope
 

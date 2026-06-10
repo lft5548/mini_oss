@@ -70,6 +70,25 @@ bool setConfigValue(AppConfig& config, const std::string& key, const std::string
         return true;
     }
 
+    if (key == "max_connections" || key == "server.max_connections") {
+        if (!parseUnsigned(value, parsed, error) || parsed == 0) {
+            error = "invalid max_connections: " + value;
+            return false;
+        }
+        config.max_connections = static_cast<std::size_t>(parsed);
+        return true;
+    }
+
+    if (key == "thread_queue_limit" || key == "server.thread_queue_limit"
+        || key == "thread_pool.queue_limit" || key == "server.worker_queue_limit") {
+        if (!parseUnsigned(value, parsed, error)) {
+            error = "invalid thread_queue_limit: " + value;
+            return false;
+        }
+        config.thread_queue_limit = static_cast<std::size_t>(parsed);
+        return true;
+    }
+
     if (key == "storage_dir" || key == "storage.dir" || key == "storage.root_dir"
         || key == "server.storage_dir") {
         if (value.empty()) {
@@ -96,6 +115,26 @@ bool setConfigValue(AppConfig& config, const std::string& key, const std::string
             return false;
         }
         config.slow_request_ms = parsed;
+        return true;
+    }
+
+    if (key == "request_timeout_ms" || key == "server.request_timeout_ms"
+        || key == "timeout.request_ms") {
+        if (!parseUnsigned(value, parsed, error)) {
+            error = "invalid request_timeout_ms: " + value;
+            return false;
+        }
+        config.request_timeout_ms = parsed;
+        return true;
+    }
+
+    if (key == "upload_timeout_ms" || key == "server.upload_timeout_ms"
+        || key == "timeout.upload_ms") {
+        if (!parseUnsigned(value, parsed, error)) {
+            error = "invalid upload_timeout_ms: " + value;
+            return false;
+        }
+        config.upload_timeout_ms = parsed;
         return true;
     }
 

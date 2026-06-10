@@ -13,9 +13,13 @@ struct AppConfig {
     std::filesystem::path storage_dir = "storage";
     std::filesystem::path log_dir = "logs";
     std::uint64_t slow_request_ms = 200;
+    std::size_t max_connections = 1024;
+    std::size_t thread_queue_limit = 1024;
     std::size_t max_request_bytes = 10 * 1024 * 1024;
     std::size_t max_upload_bytes = 128 * 1024 * 1024;
     std::size_t stream_upload_threshold_bytes = 1024 * 1024;
+    std::uint64_t request_timeout_ms = 5000;
+    std::uint64_t upload_timeout_ms = 30000;
     std::string auth_token;
 };
 

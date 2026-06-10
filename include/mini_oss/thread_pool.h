@@ -14,7 +14,7 @@ class ThreadPool {
 public:
     using Task = std::function<void()>;
 
-    explicit ThreadPool(std::size_t thread_count = 0);
+    explicit ThreadPool(std::size_t thread_count = 0, std::size_t max_queue_size = 0);
     ~ThreadPool();
 
     ThreadPool(const ThreadPool&) = delete;
@@ -31,6 +31,7 @@ private:
     std::condition_variable cv_;
     std::queue<Task> tasks_;
     std::vector<std::thread> workers_;
+    std::size_t max_queue_size_ = 0;
     bool stopping_ = false;
 };
 
