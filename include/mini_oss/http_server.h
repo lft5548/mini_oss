@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mini_oss/router.h"
+
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -26,13 +28,12 @@ private:
 
     static bool setNonBlocking(int fd);
     static bool sendAll(int fd, const std::string& data);
-    static std::string buildResponse(int status_code, const std::string& status_text,
-                                     const std::string& content_type, const std::string& body);
 
     std::uint16_t port_ = 0;
     int listen_fd_ = -1;
     int epoll_fd_ = -1;
     std::unordered_map<int, std::string> buffers_;
+    Router router_;
 };
 
 } // namespace mini_oss

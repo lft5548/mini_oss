@@ -19,29 +19,14 @@ constexpr int kMaxEvents = 1024;
 constexpr int kBufferSize = 4096;
 constexpr int kMaxHeaderSize = 16 * 1024;
 
-std::string firstLine(const std::string& request)
-{
-    const auto pos = request.find("\r\n");
-    return pos == std::string::npos ? request : request.substr(0, pos);
-}
-
-std::string pathFromRequestLine(const std::string& line)
-{
-    std::istringstream iss(line);
-    std::string method;
-    std::string path;
-    iss >> method >> path;
-    if (method != "GET") {
-        return {};
-    }
-    return path;
-}
-
 } // namespace
 
 HttpServer::HttpServer(std::uint16_t port)
     : port_(port)
 {
+    router_.addRoute(HttpMethod::Get, "/health", [](const HttpRequest&) {
+        return HttpResponse::json(200, "OK", "{\"status\":\"ok\"}\n");
+    });
 }
 
 HttpServer::~HttpServer()
@@ -182,8 +167,9 @@ void HttpServer::handleClientRead(int client_fd)
         if (n > 0) {
             request.append(buffer, static_cast<std::size_t>(n));
             if (request.size() > kMaxHeaderSize) {
-                const auto response = buildResponse(413, "Payload Too Large", "text/plain",
-                                                    "request header too large\n");
+                const auto response = HttpResponse::text(413, "Payload Too Large",
+                                                         "request header too large\n")
+                                          .serialize();
                 sendAll(client_fd, response);
                 closeClient(client_fd);
                 return;
@@ -205,20 +191,16 @@ void HttpServer::handleClientRead(int client_fd)
         return;
     }
 
-    if (request.find("\r\n\r\n") == std::string::npos) {
+    const auto parse_result = parseHttpRequest(request);
+    if (!parse_result.complete) {
         return;
     }
 
-    const auto line = firstLine(request);
-    const auto path = pathFromRequestLine(line);
-
     std::string response;
-    if (path == "/health") {
-        response = buildResponse(200, "OK", "application/json", "{\"status\":\"ok\"}\n");
-    } else if (path.empty()) {
-        response = buildResponse(405, "Method Not Allowed", "text/plain", "method not allowed\n");
+    if (!parse_result.ok) {
+        response = HttpResponse::badRequest(parse_result.error).serialize();
     } else {
-        response = buildResponse(404, "Not Found", "text/plain", "not found\n");
+        response = router_.route(parse_result.request).serialize();
     }
 
     sendAll(client_fd, response);
@@ -263,19 +245,6 @@ bool HttpServer::sendAll(int fd, const std::string& data)
         return false;
     }
     return true;
-}
-
-std::string HttpServer::buildResponse(int status_code, const std::string& status_text,
-                                      const std::string& content_type, const std::string& body)
-{
-    std::ostringstream oss;
-    oss << "HTTP/1.1 " << status_code << ' ' << status_text << "\r\n"
-        << "Content-Type: " << content_type << "\r\n"
-        << "Content-Length: " << body.size() << "\r\n"
-        << "Connection: close\r\n"
-        << "\r\n"
-        << body;
-    return oss.str();
 }
 
 } // namespace mini_oss
