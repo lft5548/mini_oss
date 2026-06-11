@@ -110,7 +110,7 @@ def run_resource_guard_checks() -> dict[str, object]:
         "request_timeout_ms = 600\n"
         "upload_timeout_ms = 600\n\n"
         "[storage]\ndir = tmp/resource_guard_storage\n\n"
-        "[logging]\ndir = tmp/resource_guard_logs\n\n"
+        "[logging]\ndir = tmp/resource_guard_logs\nqueue_limit = 1024\n\n"
         "[auth]\ntoken = smoke-token\n",
         encoding="utf-8",
     )
@@ -173,7 +173,7 @@ def main() -> int:
         "request_timeout_ms = 2000\n"
         "upload_timeout_ms = 5000\n\n"
         "[storage]\ndir = tmp/smoke_storage\n\n"
-        "[logging]\ndir = tmp/smoke_logs\n\n"
+        "[logging]\ndir = tmp/smoke_logs\nqueue_limit = 4096\n\n"
         "[auth]\ntoken = smoke-token\n",
         encoding="utf-8",
     )
@@ -587,6 +587,7 @@ def main() -> int:
         "streamed_upload_requests",
         "uploaded_bytes",
         "streamed_uploaded_bytes",
+        "log_dropped_entries",
         "request_bytes",
         "response_bytes",
         "total_latency_ms",
@@ -676,6 +677,9 @@ def main() -> int:
         return 1
     if "level=INFO" not in error_text:
         print("error log info entry missing", file=sys.stderr)
+        return 1
+    if 'msg="Mini-OSS stopped"' not in error_text:
+        print("async logger shutdown flush entry missing", file=sys.stderr)
         return 1
     if "duration_ms=" not in slow_text:
         print("slow log entry missing", file=sys.stderr)

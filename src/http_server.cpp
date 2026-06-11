@@ -107,7 +107,12 @@ HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
         return HttpResponse::json(200, "OK", "{\"status\":\"ok\"}\n");
     });
     router_.addRoute(HttpMethod::Get, "/metrics", [this](const HttpRequest&) {
-        return HttpResponse::json(200, "OK", metrics_.toJson() + "\n");
+        std::string body = metrics_.toJson();
+        if (!body.empty() && body.back() == '}') {
+            body.pop_back();
+            body += ",\"log_dropped_entries\":" + std::to_string(logger_.droppedCount()) + "}";
+        }
+        return HttpResponse::json(200, "OK", body + "\n");
     });
     router_.addRoute(HttpMethod::Post, "/objects", [this](const HttpRequest& request) {
         return object_store_.createObject(request);

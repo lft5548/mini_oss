@@ -109,6 +109,16 @@ bool setConfigValue(AppConfig& config, const std::string& key, const std::string
         return true;
     }
 
+    if (key == "log_queue_limit" || key == "logging.queue_limit"
+        || key == "logging.log_queue_limit" || key == "server.log_queue_limit") {
+        if (!parseUnsigned(value, parsed, error)) {
+            error = "invalid log_queue_limit: " + value;
+            return false;
+        }
+        config.log_queue_limit = static_cast<std::size_t>(parsed);
+        return true;
+    }
+
     if (key == "slow_request_ms" || key == "logging.slow_request_ms"
         || key == "server.slow_request_ms") {
         if (!parseUnsigned(value, parsed, error)) {

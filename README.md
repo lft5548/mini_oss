@@ -49,7 +49,8 @@ Command-line options override the config file:
 
 ```bash
 ./build/mini_oss --config config.ini --port 8080 --threads 4 \
-  --storage-dir storage --log-dir logs --slow-request-ms 200 \
+  --storage-dir storage --log-dir logs --log-queue-limit 8192 \
+  --slow-request-ms 200 \
   --max-request-bytes 10485760 --max-upload-bytes 134217728 \
   --stream-upload-threshold-bytes 1048576 --max-connections 1024 \
   --thread-queue-limit 1024 --request-timeout-ms 5000 \
@@ -71,7 +72,7 @@ The current MVP supports:
 - epoll event loop
 - worker thread pool for HTTP request handling
 - config file and command-line override support
-- access/error/slow request logs under configurable log directory
+- asynchronous access/error/slow request logs under configurable log directory
 - optional Token authentication for object APIs
 - SHA-256 object integrity metadata
 - content deduplication and instant upload based on SHA-256
@@ -158,7 +159,7 @@ curl -i -X POST http://127.0.0.1:8080/objects \
 
 ## Metrics
 
-`GET /metrics` returns runtime service counters in JSON format, including active/peak/total connections, rejected connections, total requests, success/failure counts, HTTP status-class distribution, worker-queue rejections, request/upload timeouts, object upload counters, request/response bytes, total latency, and average latency.
+`GET /metrics` returns runtime service counters in JSON format, including active/peak/total connections, rejected connections, total requests, success/failure counts, HTTP status-class distribution, worker-queue rejections, request/upload timeouts, object upload counters, async log dropped entries, request/response bytes, total latency, and average latency.
 
 ```bash
 curl -i http://127.0.0.1:8080/metrics
@@ -166,7 +167,9 @@ curl -i http://127.0.0.1:8080/metrics
 
 ## Logs
 
-Mini-OSS writes logs to the configured log directory:
+Mini-OSS writes logs asynchronously to the configured log directory. Request threads enqueue completed log lines and return quickly, while a background thread batches file writes and flushes during shutdown. `logging.queue_limit` or `--log-queue-limit` controls the in-memory queue; `0` means unlimited. When the queue is full, Mini-OSS drops new log entries, increments `log_dropped_entries` in `/metrics`, and writes a final drop summary to `error.log`.
+
+Mini-OSS writes three log files:
 
 - `access.log`: remote address, method, path, status code, response bytes, request latency.
 - `error.log`: startup/shutdown events and server-side errors.

@@ -81,20 +81,22 @@ Linux File System / SQLite / Redis(optional)
 - Command-line options override config-file values.
 - Current configurable values: port, worker threads, storage directory, log directory, slow request threshold,
   connection limit, thread queue limit, request/upload timeout, in-memory request limit, upload size limit,
-  stream-upload threshold, and auth token.
+  stream-upload threshold, log queue limit, and auth token.
 
 ### Logging
 
-- Thread-safe file logger.
+- Asynchronous thread-safe file logger with a bounded in-memory queue.
+- Request threads only enqueue completed log lines; a background logger thread batches writes and flushes on shutdown.
+- Queue overflow uses a non-blocking drop-and-count policy so logging backpressure does not block the request path; dropped entries are exposed through `/metrics` and summarized in `error.log` on shutdown.
 - `access.log` records remote address, method, path, status code, response bytes, and latency.
-- `error.log` records startup/shutdown events and server-side errors.
+- `error.log` records startup/shutdown events, server-side errors, and async logger drop summaries.
 - `slow.log` records requests whose latency reaches the configured threshold.
 
 ### Metrics
 
 - Thread-safe atomic counters for runtime service statistics.
 - Count active/peak/total connections, rejected connections, total requests, success/failure requests, HTTP status classes, request bytes, response bytes, total latency, and average latency.
-- Count worker-queue rejections, incomplete request timeouts, streaming upload timeouts, object upload requests, streamed upload requests, and uploaded bytes.
+- Count worker-queue rejections, incomplete request timeouts, streaming upload timeouts, object upload requests, streamed upload requests, uploaded bytes, and async logger dropped entries.
 - `HttpServer` updates metrics on connection lifecycle, resource guard rejection, timeout, upload completion, and request completion, then exposes snapshots through `GET /metrics`.
 
 ### Benchmarking

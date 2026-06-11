@@ -90,6 +90,7 @@ def write_config(
     thread_queue_limit: int,
     request_timeout_ms: int,
     upload_timeout_ms: int,
+    log_queue_limit: int,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -102,7 +103,7 @@ def write_config(
         f"request_timeout_ms = {request_timeout_ms}\n"
         f"upload_timeout_ms = {upload_timeout_ms}\n\n"
         "[storage]\ndir = tmp/benchmark_storage\n\n"
-        "[logging]\ndir = tmp/benchmark_logs\n\n"
+        f"[logging]\ndir = tmp/benchmark_logs\nqueue_limit = {log_queue_limit}\n\n"
         f"[auth]\ntoken = {AUTH_TOKEN}\n",
         encoding="utf-8",
     )
@@ -395,6 +396,7 @@ def render_report(
         f"- Thread queue limit: {args.thread_queue_limit}",
         f"- Request timeout ms: {args.request_timeout_ms}",
         f"- Upload timeout ms: {args.upload_timeout_ms}",
+        f"- Log queue limit: {args.log_queue_limit}",
         "",
         "## Summary",
         "",
@@ -512,6 +514,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thread-queue-limit", type=int, default=1024)
     parser.add_argument("--request-timeout-ms", type=int, default=5000)
     parser.add_argument("--upload-timeout-ms", type=int, default=30000)
+    parser.add_argument("--log-queue-limit", type=int, default=65536)
     parser.add_argument("--report", type=Path, default=Path("docs/benchmark.md"))
     return parser.parse_args()
 
@@ -553,6 +556,7 @@ def main() -> int:
         args.thread_queue_limit,
         args.request_timeout_ms,
         args.upload_timeout_ms,
+        args.log_queue_limit,
     )
 
     proc = start_server(config_path, args.threads)

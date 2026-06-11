@@ -34,8 +34,8 @@ bool parseUnsigned(const std::string& value, std::uint64_t& parsed)
 void printUsage()
 {
     std::cout << "Usage: mini_oss [--config config.ini] [--port 8080] [--threads 4] "
-                 "[--storage-dir storage] [--log-dir logs] [--slow-request-ms 200] "
-                 "[--max-connections 1024] [--thread-queue-limit 1024] "
+                 "[--storage-dir storage] [--log-dir logs] [--log-queue-limit 8192] "
+                 "[--slow-request-ms 200] [--max-connections 1024] [--thread-queue-limit 1024] "
                  "[--max-request-bytes bytes] [--max-upload-bytes bytes] "
                  "[--stream-upload-threshold-bytes bytes] [--request-timeout-ms 5000] "
                  "[--upload-timeout-ms 30000] [--auth-token token] [--version]\n";
@@ -50,6 +50,7 @@ int main(int argc, char* argv[])
     std::optional<std::size_t> worker_threads_override;
     std::optional<std::filesystem::path> storage_dir_override;
     std::optional<std::filesystem::path> log_dir_override;
+    std::optional<std::size_t> log_queue_limit_override;
     std::optional<std::uint64_t> slow_request_ms_override;
     std::optional<std::size_t> max_connections_override;
     std::optional<std::size_t> thread_queue_limit_override;
@@ -83,6 +84,13 @@ int main(int argc, char* argv[])
             storage_dir_override = argv[++i];
         } else if (arg == "--log-dir" && i + 1 < argc) {
             log_dir_override = argv[++i];
+        } else if (arg == "--log-queue-limit" && i + 1 < argc) {
+            std::uint64_t value = 0;
+            if (!parseUnsigned(argv[++i], value)) {
+                std::cerr << "Invalid log queue limit\n";
+                return 1;
+            }
+            log_queue_limit_override = static_cast<std::size_t>(value);
         } else if (arg == "--slow-request-ms" && i + 1 < argc) {
             std::uint64_t value = 0;
             if (!parseUnsigned(argv[++i], value)) {
@@ -178,6 +186,9 @@ int main(int argc, char* argv[])
     if (log_dir_override.has_value()) {
         config.log_dir = log_dir_override.value();
     }
+    if (log_queue_limit_override.has_value()) {
+        config.log_queue_limit = log_queue_limit_override.value();
+    }
     if (slow_request_ms_override.has_value()) {
         config.slow_request_ms = slow_request_ms_override.value();
     }
@@ -206,7 +217,7 @@ int main(int argc, char* argv[])
         config.auth_token = auth_token_override.value();
     }
 
-    mini_oss::Logger logger(config.log_dir);
+    mini_oss::Logger logger(config.log_dir, config.log_queue_limit);
     if (!logger.ready()) {
         std::cerr << "Logger error: " << logger.lastError() << '\n';
         return 1;
@@ -217,6 +228,7 @@ int main(int argc, char* argv[])
     std::cout << "Config: " << config_path << '\n';
     std::cout << "Storage: " << config.storage_dir << '\n';
     std::cout << "Logs: " << config.log_dir << '\n';
+    std::cout << "Log queue limit: " << config.log_queue_limit << '\n';
     logger.info("Mini-OSS starting");
 
     std::signal(SIGINT, handleSignal);
