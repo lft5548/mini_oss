@@ -76,11 +76,23 @@ The current MVP supports:
 - optional Token authentication for object APIs
 - SHA-256 object integrity metadata
 - content deduplication and instant upload based on SHA-256
+- CTest unit tests for HTTP parsing, routing, config parsing, object storage, deduplication, and Range download
 - repeatable benchmark report generated with ab and wrk
 - configurable upload size limits and stream-upload threshold
 - large `POST /objects` request bodies streamed to `storage/tmp_uploads` before metadata processing
 - resource guards for max connections, worker queue length, slow request timeout, and slow upload timeout
 - SQLite metadata persistence under `storage/metadata.db`
+
+## Tests
+
+Mini-OSS uses CTest for C++ unit tests and keeps the Python smoke test for end-to-end HTTP workflow checks.
+
+```bash
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+./scripts/smoke_test_http.py
+```
 
 ## Smoke Test
 
@@ -106,6 +118,7 @@ Expected checks:
 - connection overflow returns `503 Service Unavailable`
 - `access.log`, `error.log`, and `slow.log` are generated
 - `/metrics` exposes runtime counters for connections, status classes, resource rejections, timeouts, upload traffic, bytes, and latency
+- CTest unit tests and a GitHub Actions workflow provide build, unit-test, and smoke-test quality gates
 - object APIs return `401 Unauthorized` when auth token is configured and missing
 
 ## Benchmark

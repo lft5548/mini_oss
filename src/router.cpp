@@ -18,10 +18,9 @@ HttpResponse Router::route(const HttpRequest& request) const
 {
     bool path_exists = false;
     for (const auto& route : routes_) {
-        bool matched = route.path == request.path;
-        if (!matched && route.prefix_match) {
-            matched = request.path.rfind(route.path, 0) == 0 && request.path.size() > route.path.size();
-        }
+        const bool matched = route.prefix_match
+            ? request.path.rfind(route.path, 0) == 0 && request.path.size() > route.path.size()
+            : route.path == request.path;
 
         if (!matched) {
             continue;

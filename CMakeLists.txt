@@ -14,8 +14,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_executable(mini_oss
-    src/main.cpp
+set(MINI_OSS_CORE_SOURCES
     src/config.cpp
     src/http.cpp
     src/http_server.cpp
@@ -27,8 +26,28 @@ add_executable(mini_oss
     src/thread_pool.cpp
 )
 
-target_include_directories(mini_oss PRIVATE
+add_library(mini_oss_core STATIC
+    ${MINI_OSS_CORE_SOURCES}
+)
+
+target_include_directories(mini_oss_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include
+)
+
+target_compile_options(mini_oss_core PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+target_link_libraries(mini_oss_core PUBLIC
+    OpenSSL::Crypto
+    SQLite::SQLite3
+    Threads::Threads
+)
+
+add_executable(mini_oss
+    src/main.cpp
 )
 
 target_compile_options(mini_oss PRIVATE
@@ -38,7 +57,25 @@ target_compile_options(mini_oss PRIVATE
 )
 
 target_link_libraries(mini_oss PRIVATE
-    OpenSSL::Crypto
-    SQLite::SQLite3
-    Threads::Threads
+    mini_oss_core
 )
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(mini_oss_tests
+        tests/test_main.cpp
+    )
+
+    target_compile_options(mini_oss_tests PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+
+    target_link_libraries(mini_oss_tests PRIVATE
+        mini_oss_core
+    )
+
+    add_test(NAME mini_oss_unit_tests COMMAND mini_oss_tests)
+endif()

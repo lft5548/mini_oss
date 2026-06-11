@@ -99,6 +99,13 @@ Linux File System / SQLite / Redis(optional)
 - Count worker-queue rejections, incomplete request timeouts, streaming upload timeouts, object upload requests, streamed upload requests, uploaded bytes, and async logger dropped entries.
 - `HttpServer` updates metrics on connection lifecycle, resource guard rejection, timeout, upload completion, and request completion, then exposes snapshots through `GET /metrics`.
 
+### Testing and CI
+
+- `mini_oss_core` is built as a reusable static library so protocol, routing, config, and storage logic can be tested without starting the server binary.
+- CTest runs C++ unit tests for HTTP parsing, response serialization, router matching, config parsing, object upload, deduplication, Range download, and delete reference cleanup.
+- `scripts/smoke_test_http.py` remains the end-to-end test for real socket IO, authentication, metrics, resource guards, persistence, and log generation.
+- `.github/workflows/ci.yml` documents the CI quality gate: configure, build, CTest, and smoke test.
+
 ### Benchmarking
 
 - `scripts/benchmark_http.py` starts a local Mini-OSS instance and drives benchmark cases through ab and wrk.
