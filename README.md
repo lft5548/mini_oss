@@ -28,6 +28,7 @@ HTTP APIs, object metadata, file integrity verification, logging, monitoring, an
 - [Requirements](docs/requirements.md): project scope, current status, limitations, and advanced roadmap.
 - [Benchmark Report](docs/benchmark.md): repeatable ab/wrk benchmark commands, results, raw output, and metrics snapshot.
 - [Deployment](docs/deployment.md): local scripts, Docker image, docker compose, runtime paths, and operational checks.
+- [Interview Guide](docs/interview_guide.md): interview narrative, design tradeoffs, verification evidence, and common follow-up answers.
 
 ## Roadmap
 
