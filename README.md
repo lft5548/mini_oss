@@ -22,6 +22,12 @@ HTTP APIs, object metadata, file integrity verification, logging, monitoring, an
 - CMake
 - curl, ab/wrk for testing and benchmarking
 
+## Project Documents
+
+- [Architecture](docs/architecture.md): system design, request lifecycle, threading model, storage design, resource guards, observability, testing, and interview explanation outline.
+- [Requirements](docs/requirements.md): project scope, current status, limitations, and advanced roadmap.
+- [Benchmark Report](docs/benchmark.md): repeatable ab/wrk benchmark commands, results, raw output, and metrics snapshot.
+
 ## Roadmap
 
 1. MVP HTTP server: listen, accept, parse basic HTTP, return responses.

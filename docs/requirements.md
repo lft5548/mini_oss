@@ -48,22 +48,25 @@ Current MVP status:
 - Thread pool request processing: done.
 - Config file parsing and command-line override: done.
 - Access/error/slow request logs: done.
+- Asynchronous bounded logging with drop counters: done.
 - `/metrics` runtime monitoring endpoint: done.
+- Resource and status-class metrics: done.
 - Token authentication for object APIs: done.
 - Benchmark script and ab/wrk report: done.
+- CTest unit tests and GitHub Actions CI workflow: done.
 - Large upload streaming with temporary files and incremental SHA-256: done.
 - Resource guards for connection count, worker queue length, request timeout, and upload timeout: done.
 
 Known limitations before the next phase:
 
-- Logging is synchronous file append; later versions can add async logging.
 - Metrics are in-process counters and reset after service restart.
 - Small requests are still buffered in memory; large `POST /objects` uploads use a file-backed streaming path.
 - Token auth is static shared-token auth; later versions can add users, roles, or signed URLs.
 - Deduplication is single-node metadata deduplication; later versions can add content-addressed storage layout and garbage collection jobs.
 - No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.
 - Large response sending still happens in the event loop; later versions can add EPOLLOUT output buffers.
-- Queue-limit behavior is implemented as fail-fast admission control; later versions can expose rejected-task counters in `/metrics`.
+- No Redis cache yet; later versions can cache object metadata and SHA-256 dedup indexes with SQLite fallback.
+- No Docker deployment artifact yet; later versions can add Dockerfile, docker-compose, startup scripts, and deployment docs.
 
 ## Advanced Scope
 

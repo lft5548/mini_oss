@@ -1,157 +1,363 @@
-# Architecture
+# Mini-OSS Architecture
 
-## Layered Design
+Mini-OSS is a single-node Linux C++ object storage service. The project is intentionally designed as an interview-ready backend system rather than a feature-only demo: each module has a clear responsibility, observable behavior, resource boundary, and verification method.
+
+## Design Goals
+
+- Build a Linux C++ backend service with non-blocking network IO and worker-thread request processing.
+- Support common object-storage workflows: upload, list, download, Range download, delete, deduplication, and instant upload.
+- Keep the service stable under imperfect clients through connection limits, bounded queues, request timeouts, upload timeouts, and temporary-file cleanup.
+- Make runtime behavior explainable through access logs, slow logs, error logs, `/metrics`, smoke tests, unit tests, and benchmark reports.
+- Keep the current version single-node and understandable, while leaving clear extension points for Redis cache, Docker deployment, and future distributed storage features.
+
+## High-Level Architecture
 
 ```text
-Client
-  |
-HTTP API
-  |
-HttpServer / Router
-  |
-Config / Auth / Logger / FileService / UserService / MetricsService
-  |
-MetadataStore / ObjectStore / Logger
-  |
-Linux File System / SQLite / Redis(optional)
+Client / curl / ab / wrk
+        |
+        v
+Linux socket + non-blocking fd + epoll
+        |
+        v
+HttpServer
+  - accept/read
+  - connection lifecycle
+  - timeout scan
+  - large-upload streaming
+  - auth gate
+        |
+        v
+Router + worker ThreadPool
+        |
+        v
+ObjectStore
+  - upload/download/list/delete
+  - SHA-256
+  - dedup/instant upload
+  - Range download
+        |
+        v
+MetadataStore(SQLite WAL) + Linux File System
+
+Side channels:
+  Config -> HttpServer / ObjectStore / Logger
+  Async Logger -> access.log / error.log / slow.log
+  Metrics -> GET /metrics
+  Tests -> CTest + smoke_test_http.py
+  Benchmark -> ab/wrk report
 ```
 
-## Modules
+The service separates IO, business logic, persistence, and observability:
 
-### Network
+- The epoll loop is responsible for accepting connections and reading request bytes.
+- Worker threads handle HTTP routing, file operations, SHA-256 calculation, and SQLite metadata operations.
+- Object files are stored in `storage/objects`, while metadata is stored in SQLite.
+- Logs and metrics are maintained outside the business path as much as possible.
 
-- Create listening socket.
-- Set socket to non-blocking mode.
-- Use epoll to monitor readable/writable events.
-- Manage connection lifecycle.
-- The epoll event loop accepts connections and reads complete HTTP requests.
-- For large `POST /objects` bodies, the event loop parses headers first and streams the body into `storage/tmp_uploads` instead of keeping the whole body in memory.
-- Completed file-backed upload requests pass a temporary file path to the worker, while small requests keep the existing in-memory body path.
-- Completed requests are dispatched to the worker thread pool.
-- The event loop enforces max active connections and periodically closes idle incomplete requests or uploads.
-- Timeout cleanup reuses the connection lifecycle path, so unfinished upload temporary files are removed.
-- Worker responses wake the event loop through eventfd, and the current version closes each HTTP connection after sending the response.
+## Request Lifecycle
 
-### HTTP
+### Normal HTTP Request
 
-- Parse request line, headers, and body.
-- Build HTTP responses.
-- Route URL and method to service handlers.
-- Current implementation supports one request per connection.
+```text
+1. client connects
+2. epoll detects readable fd
+3. HttpServer reads bytes into connection buffer
+4. HTTP parser validates request line, headers, and Content-Length
+5. auth check runs before object API routing
+6. request is submitted to ThreadPool
+7. Router dispatches to ObjectStore
+8. ObjectStore reads/writes file system and SQLite metadata
+9. worker serializes HttpResponse
+10. eventfd wakes epoll loop
+11. epoll loop sends response and closes connection
+12. access log, slow log, and metrics are updated
+```
 
-### Thread Pool
+The current implementation supports one request per connection. This keeps the server easier to reason about and avoids persistent-connection state complexity while the project focuses on backend fundamentals.
 
-- Execute HTTP routing, object storage, and metadata tasks outside the epoll loop.
-- Keep the IO event loop responsive while file and SQLite operations are running.
-- Use a fixed worker count derived from hardware concurrency by default, with `--threads` for manual tuning.
-- Bound the pending task queue with `thread_queue_limit`; when the queue is full, new requests fail fast with `503`.
+### Large Upload Request
 
-### Object Store
+Small request bodies are buffered in memory. Large `POST /objects` bodies switch to a file-backed path:
 
-- Save uploaded files.
-- Generate object IDs.
-- Support download, list, and delete.
-- Verify SHA-256 integrity.
-- Reuse existing physical files when uploaded content has the same SHA-256 and size.
-- Support instant upload by creating new metadata for an existing SHA-256 without resending the file body.
-- Support single-range object download with `206 Partial Content`, `Content-Range`, and `Accept-Ranges`.
-- Delete metadata first and remove the physical file only when no remaining object references point to it.
-- Large upload processing uses temporary files, incremental SHA-256 calculation, deduplication lookup, and atomic-style rename into the final object path.
-- Duplicate large uploads remove the temporary body file after creating a new metadata alias.
-- Failed or disconnected uploads clean temporary files through connection lifecycle cleanup.
-- Current MVP stores object files under `storage/objects` and persists metadata through SQLite.
+```text
+1. epoll loop parses headers first
+2. if Content-Length > stream_upload_threshold_bytes, create temp file
+3. incoming body chunks are written to storage/tmp_uploads
+4. upload timeout protects slow or stalled clients
+5. completed temp file is submitted to worker thread
+6. ObjectStore calculates SHA-256 incrementally in 64KB chunks
+7. ObjectStore checks dedup metadata by sha256 + size
+8. duplicate upload creates metadata alias and deletes temp file
+9. new upload renames temp file into storage/objects/{id}
+10. failed/disconnected upload is cleaned through connection cleanup
+```
 
-### Metadata Store
+This design avoids keeping large request bodies in memory and gives a clear story around memory control, temporary-file lifecycle, and failure cleanup.
 
-- Store object metadata: id, filename, path, size, sha256, owner, created_at.
-- Current implementation uses SQLite and stores metadata in `storage/metadata.db`.
-- SQLite WAL mode is enabled for the local single-node metadata store.
-- `sha256 + size` and `path` indexes support dedup lookup and reference-count style cleanup.
+### Download and Range Download
 
-### Auth
+`GET /objects/{id}` uses SQLite metadata to locate the physical object file. Normal download returns the full file with `Accept-Ranges: bytes`. A valid single-range request returns:
 
-- Optional token authentication protects object APIs when an auth token is configured.
-- Supports `Authorization: Bearer <token>` and `X-Auth-Token: <token>` headers.
-- Public endpoints such as `/health` and `/metrics` bypass authentication.
+- `206 Partial Content`
+- `Content-Range: bytes start-end/total`
+- `Accept-Ranges: bytes`
 
-### Config
+Invalid ranges return `416 Range Not Satisfiable` with `Content-Range: bytes */total`.
 
-- Load simple INI-style config files.
-- Support `server`, `storage`, and `logging` sections.
-- Command-line options override config-file values.
-- Current configurable values: port, worker threads, storage directory, log directory, slow request threshold,
-  connection limit, thread queue limit, request/upload timeout, in-memory request limit, upload size limit,
-  stream-upload threshold, log queue limit, and auth token.
+Range support is useful because it demonstrates protocol detail, partial file reads, and object-service behavior beyond simple upload/download.
 
-### Logging
+## Threading Model
 
-- Asynchronous thread-safe file logger with a bounded in-memory queue.
-- Request threads only enqueue completed log lines; a background logger thread batches writes and flushes on shutdown.
-- Queue overflow uses a non-blocking drop-and-count policy so logging backpressure does not block the request path; dropped entries are exposed through `/metrics` and summarized in `error.log` on shutdown.
-- `access.log` records remote address, method, path, status code, response bytes, and latency.
-- `error.log` records startup/shutdown events, server-side errors, and async logger drop summaries.
-- `slow.log` records requests whose latency reaches the configured threshold.
+```text
+Main thread
+  |
+  +-- epoll event loop
+  |     - accept
+  |     - read
+  |     - timeout scan
+  |     - streaming upload writes
+  |     - response send
+  |
+  +-- worker ThreadPool
+  |     - route request
+  |     - SQLite operations
+  |     - file read/write
+  |     - SHA-256
+  |
+  +-- async logger thread
+        - batch log writes
+        - flush on shutdown
+```
 
-### Metrics
+Important design choices:
 
-- Thread-safe atomic counters for runtime service statistics.
-- Count active/peak/total connections, rejected connections, total requests, success/failure requests, HTTP status classes, request bytes, response bytes, total latency, and average latency.
-- Count worker-queue rejections, incomplete request timeouts, streaming upload timeouts, object upload requests, streamed upload requests, uploaded bytes, and async logger dropped entries.
-- `HttpServer` updates metrics on connection lifecycle, resource guard rejection, timeout, upload completion, and request completion, then exposes snapshots through `GET /metrics`.
+- The epoll loop avoids blocking business work by pushing completed requests to the worker pool.
+- The worker queue is bounded by `thread_queue_limit`; queue overflow fails fast with `503`.
+- Large uploads are streamed while reading the socket, but CPU-heavy and metadata-heavy processing still happens in worker threads after the file is complete.
+- Logging is asynchronous so request threads do not directly pay file flush latency.
 
-### Testing and CI
+## Storage Design
 
-- `mini_oss_core` is built as a reusable static library so protocol, routing, config, and storage logic can be tested without starting the server binary.
-- CTest runs C++ unit tests for HTTP parsing, response serialization, router matching, config parsing, object upload, deduplication, Range download, and delete reference cleanup.
-- `scripts/smoke_test_http.py` remains the end-to-end test for real socket IO, authentication, metrics, resource guards, persistence, and log generation.
-- `.github/workflows/ci.yml` documents the CI quality gate: configure, build, CTest, and smoke test.
+### Physical Layout
 
-### Benchmarking
+```text
+storage/
+  metadata.db
+  objects/
+    1
+    2
+  tmp_uploads/
+    upload_*.tmp
+```
 
-- `scripts/benchmark_http.py` starts a local Mini-OSS instance and drives benchmark cases through ab and wrk.
-- ab is used for fixed request-count tests, while wrk is used for fixed-duration throughput and latency distribution tests.
-- The generated `docs/benchmark.md` records commands, QPS, mean latency, percentile latency, failure count, transfer rate, raw tool output, and a `/metrics` snapshot.
+### Metadata Schema
 
-## MVP API Draft
+SQLite stores:
+
+- `id`: object id
+- `filename`: sanitized original filename
+- `path`: physical file path
+- `size`: object size
+- `sha256`: content hash
+- `created_at`: creation time
+
+Indexes:
+
+- `sha256 + size`: dedup and instant upload lookup
+- `path`: reference-count cleanup for shared physical files
+
+SQLite WAL mode is enabled to improve local single-node metadata behavior. The current implementation uses one SQLite connection protected by a mutex; this is simple and stable for a single-node project. A future version can add a connection pool or move metadata to MySQL/PostgreSQL.
+
+### Deduplication and Instant Upload
+
+Mini-OSS deduplicates by `(sha256, size)`:
+
+- If uploaded content is new, it writes a physical file and inserts metadata.
+- If content already exists, it inserts a new metadata row pointing to the existing physical file.
+- Instant upload skips body transfer and creates metadata only when the client provides a known SHA-256 and size.
+- Delete removes metadata first and deletes the physical file only when no metadata rows reference it.
+
+This design is easy to explain: metadata can have multiple logical objects pointing to one physical file.
+
+## API Surface
 
 ```text
 GET    /health
+GET    /metrics
 POST   /objects
 POST   /objects/instant
 GET    /objects
 GET    /objects/{id}
-GET    /objects/{id}  Range: bytes=start-end
+GET    /objects/{id} Range: bytes=start-end
 DELETE /objects/{id}
-GET /metrics
-GET    /metrics
 ```
 
-## Implemented API
+Auth behavior:
+
+- `/health` and `/metrics` are public.
+- Object APIs require a token when `auth.token` or `--auth-token` is configured.
+- Supported headers: `Authorization: Bearer <token>` and `X-Auth-Token: <token>`.
+
+## Resource Guards
+
+Mini-OSS implements defensive limits commonly seen in backend services:
+
+| Guard | Config | Behavior |
+| --- | --- | --- |
+| Max connections | `max_connections` | Reject overflow with `503` |
+| Worker queue limit | `thread_queue_limit` | Fail fast with `503` when worker backlog is full |
+| Request timeout | `request_timeout_ms` | Close incomplete header/body requests with `408` |
+| Upload timeout | `upload_timeout_ms` | Close stalled file-backed uploads with `408` |
+| In-memory request limit | `max_request_bytes` | Reject oversized normal requests with `413` |
+| Upload limit | `max_upload_bytes` | Reject oversized object uploads with `413` |
+| Log queue limit | `logging.queue_limit` | Drop and count log entries instead of blocking request threads |
+
+The project exposes resource guard events through logs and `/metrics`, so overload behavior is visible instead of silent.
+
+## Observability
+
+### Logs
+
+The logger writes three files:
+
+- `access.log`: remote address, method, path, status, bytes, latency
+- `error.log`: startup/shutdown, server errors, async logger drop summary
+- `slow.log`: requests whose latency reaches `slow_request_ms`
+
+The logger uses a bounded queue and a background thread. Queue overflow uses drop-and-count instead of blocking request threads. Dropped entries are exposed as `log_dropped_entries` in `/metrics`.
+
+### Metrics
+
+`GET /metrics` returns JSON counters such as:
+
+- active, peak, total, and rejected connections
+- total, success, and failed requests
+- HTTP status-class counters
+- worker queue rejections
+- request and upload timeouts
+- object upload and streamed upload counters
+- uploaded bytes and streamed uploaded bytes
+- request and response bytes
+- total and average latency
+- async log dropped entries
+
+Metrics are in-process counters and reset when the service restarts. This is acceptable for the current single-node project; later versions can export Prometheus-style metrics or persist aggregates.
+
+## Testing Strategy
+
+Mini-OSS uses layered verification:
 
 ```text
-GET /health
-POST /objects
-POST /objects/instant
-GET /objects
-GET /objects/{id}
-GET /objects/{id}  Range: bytes=start-end
-DELETE /objects/{id}
+CTest unit tests
+  - HTTP parser
+  - response serialization
+  - router matching
+  - config parsing
+  - object upload/dedup/range/delete
+
+Python smoke test
+  - real local server process
+  - socket IO
+  - auth
+  - object workflow
+  - metadata restart persistence
+  - large upload streaming
+  - resource guards
+  - logs and metrics
+
+Benchmark script
+  - ab fixed-count tests
+  - wrk fixed-duration tests
+  - generated docs/benchmark.md
 ```
 
-Response:
+The unit-test stage found and fixed a real route-boundary bug: `/objects/` should not match the `/objects/{id}` prefix route. This is a useful interview point because it shows the tests are not decorative; they catch protocol-edge regressions.
 
-```json
-{"status":"ok"}
-```
+## Benchmarking Strategy
 
-Object upload response:
+`scripts/benchmark_http.py` starts a local server and runs:
 
-```json
-{
-  "id": "1",
-  "filename": "hello.txt",
-  "size": 14,
-  "sha256": "...",
-  "created_at": "2026-06-10T10:30:58Z"
-}
-```
+- `GET /health`
+- `GET /objects/{id}`
+- `GET /objects/{id}` with Range
+- `POST /objects/instant`
+- `POST /objects`
+
+The generated report records:
+
+- requests
+- failed requests
+- QPS
+- mean latency
+- percentile latency
+- transfer rate
+- raw ab/wrk output
+- `/metrics` snapshot
+
+The benchmark is local WSL loopback, so it should be used for regression comparison rather than production capacity claims.
+
+## Design Tradeoffs
+
+### Why epoll + thread pool?
+
+The epoll loop handles connection readiness efficiently, while worker threads isolate blocking file and SQLite work. This is a common backend pattern: IO multiplexing for connection scale, worker pool for CPU/blocking tasks.
+
+### Why SQLite first?
+
+SQLite keeps the project deployable and easy to test while still demonstrating metadata persistence, indexes, WAL mode, and query-based dedup. It is enough for a single-node object store. The metadata layer is separated, so it can later move to MySQL/PostgreSQL.
+
+### Why file-backed large uploads?
+
+Reading entire upload bodies into memory is simple but unsafe for large files. The stream-to-temp-file path controls memory, supports cleanup on timeout/disconnect, and still lets ObjectStore calculate SHA-256 incrementally after upload completion.
+
+### Why async logging?
+
+Synchronous log writes add IO latency to the request path. Async logging decouples request handling from disk flushes. A bounded queue prevents memory blowup; drop counters and final summaries preserve observability.
+
+### Why fail fast on overload?
+
+When connection count or worker queue limits are reached, returning `503` is clearer than letting latency grow without bound. This makes overload behavior predictable and measurable.
+
+## Current Limitations
+
+- One request per connection; keep-alive and pipelining are not implemented.
+- Large response sending still happens synchronously after worker completion; EPOLLOUT output buffers can improve this.
+- SQLite uses one mutex-protected connection; a connection pool or external metadata database can improve concurrency.
+- Token auth is static shared-token auth; users, roles, signed URLs, or JWT can be added later.
+- Metrics are in-process counters and reset on restart.
+- Object storage is single-node; no replication, erasure coding, compaction, or background garbage collection.
+
+## Planned Extensions
+
+Recommended next phases:
+
+1. **Docker deployment**
+   - `Dockerfile`
+   - `docker-compose.yml`
+   - startup scripts
+   - deploy/run documentation
+
+2. **Redis metadata cache**
+   - cache `object:meta:{id}`
+   - cache `object:sha:{sha256}:{size}`
+   - fallback to SQLite when Redis is unavailable
+   - invalidation on delete
+   - metrics: hits, misses, errors
+
+3. **Network output buffer**
+   - EPOLLOUT-driven response writing
+   - avoid blocking the event loop during large response send
+
+## Interview Explanation Outline
+
+When explaining the project, use this order:
+
+1. Mini-OSS is a Linux C++ single-node object storage service.
+2. Network layer uses non-blocking socket + epoll; worker pool handles blocking tasks.
+3. Object layer supports upload, download, Range, delete, SHA-256, dedup, and instant upload.
+4. Metadata is stored in SQLite with indexes for dedup and reference cleanup.
+5. Large uploads are streamed to temp files to avoid high memory usage.
+6. Resource guards protect connection count, worker backlog, request timeout, upload timeout, and log queue size.
+7. Observability includes async logs, `/metrics`, slow logs, benchmark reports, and test results.
+8. Engineering quality is shown through CTest, smoke tests, GitHub Actions, and ab/wrk benchmarks.
+9. Future extensions are Docker deployment, Redis metadata cache, and EPOLLOUT output buffers.
