@@ -31,6 +31,9 @@ struct MetricsSnapshot {
     std::uint64_t response_bytes = 0;
     std::uint64_t total_latency_ms = 0;
     double average_latency_ms = 0.0;
+    std::uint64_t metadata_cache_hits = 0;
+    std::uint64_t metadata_cache_misses = 0;
+    std::uint64_t metadata_cache_errors = 0;
 };
 
 class Metrics {
@@ -42,6 +45,9 @@ public:
     void requestTimedOut();
     void uploadTimedOut();
     void recordObjectUpload(std::size_t body_bytes, bool streamed);
+    void metadataCacheHit();
+    void metadataCacheMiss();
+    void metadataCacheError();
     void recordRequest(int status_code, std::size_t request_bytes, std::size_t response_bytes,
                        std::uint64_t duration_ms);
 
@@ -73,6 +79,9 @@ private:
     std::atomic<std::uint64_t> request_bytes_ {0};
     std::atomic<std::uint64_t> response_bytes_ {0};
     std::atomic<std::uint64_t> total_latency_ms_ {0};
+    std::atomic<std::uint64_t> metadata_cache_hits_ {0};
+    std::atomic<std::uint64_t> metadata_cache_misses_ {0};
+    std::atomic<std::uint64_t> metadata_cache_errors_ {0};
 };
 
 } // namespace mini_oss

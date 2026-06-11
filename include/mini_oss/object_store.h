@@ -1,7 +1,10 @@
 #pragma once
 
+#include "mini_oss/config.h"
 #include "mini_oss/http.h"
 #include "mini_oss/metadata_store.h"
+#include "mini_oss/metrics.h"
+#include "mini_oss/redis_metadata_cache.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -13,7 +16,8 @@ namespace mini_oss {
 
 class ObjectStore {
 public:
-    explicit ObjectStore(std::filesystem::path root_dir);
+    explicit ObjectStore(std::filesystem::path root_dir, RedisConfig redis_config = {},
+                         Metrics* metrics = nullptr);
 
     HttpResponse createObject(const HttpRequest& request);
     HttpResponse createInstantObject(const HttpRequest& request);
@@ -40,11 +44,18 @@ private:
     HttpResponse createObjectFromFileBody(const HttpRequest& request);
     HttpResponse createMetadataAlias(const ObjectInfo& source, const std::string& filename,
                                      bool instant_upload);
+    std::optional<ObjectInfo> getObjectMetadata(const std::string& id, std::string& error);
+    std::optional<ObjectInfo> findObjectBySha256Cached(const std::string& sha256,
+                                                       std::uint64_t size,
+                                                       std::string& error);
+    bool insertObjectMetadata(const ObjectInfo& info, std::string& error);
+    bool deleteObjectMetadata(const ObjectInfo& info, std::string& error);
 
     std::filesystem::path root_dir_;
     std::filesystem::path object_dir_;
     std::filesystem::path temp_upload_dir_;
     MetadataStore metadata_store_;
+    RedisMetadataCache metadata_cache_;
     mutable std::shared_mutex mutex_;
 };
 

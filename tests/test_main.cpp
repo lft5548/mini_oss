@@ -1,6 +1,7 @@
 #include "mini_oss/config.h"
 #include "mini_oss/http.h"
 #include "mini_oss/object_store.h"
+#include "mini_oss/redis_metadata_cache.h"
 #include "mini_oss/router.h"
 
 #include <cstdlib>
@@ -148,7 +149,16 @@ void testConfig()
             << "queue_limit = 123\n"
             << "slow_request_ms = 9\n"
             << "\n[auth]\n"
-            << "token = unit-token\n";
+            << "token = unit-token\n"
+            << "\n[redis]\n"
+            << "enabled = true\n"
+            << "host = 127.0.0.1\n"
+            << "port = 6379\n"
+            << "db = 2\n"
+            << "key_prefix = unit_oss\n"
+            << "ttl_seconds = 60\n"
+            << "connect_timeout_ms = 50\n"
+            << "io_timeout_ms = 50\n";
     }
 
     mini_oss::AppConfig config;
@@ -163,6 +173,14 @@ void testConfig()
     expect(config.log_queue_limit == 123, "log queue limit should parse");
     expect(config.slow_request_ms == 9, "slow request threshold should parse from logging section");
     expect(config.auth_token == "unit-token", "auth token should parse");
+    expect(config.redis.enabled, "redis enabled should parse");
+    expect(config.redis.host == "127.0.0.1", "redis host should parse");
+    expect(config.redis.port == 6379, "redis port should parse");
+    expect(config.redis.db == 2, "redis db should parse");
+    expect(config.redis.key_prefix == "unit_oss", "redis key prefix should parse");
+    expect(config.redis.ttl_seconds == 60, "redis ttl should parse");
+    expect(config.redis.connect_timeout_ms == 50, "redis connect timeout should parse");
+    expect(config.redis.io_timeout_ms == 50, "redis io timeout should parse");
 
     const auto bad_path = dir / "bad.ini";
     {
@@ -175,6 +193,29 @@ void testConfig()
     expectContains(error, "unknown config key", "unknown key error should be clear");
 
     std::filesystem::remove_all(dir);
+}
+
+void testRedisMetadataSerialization()
+{
+    mini_oss::ObjectInfo info;
+    info.id = "42";
+    info.filename = "demo:name.txt";
+    info.path = "/tmp/mini oss/object:42";
+    info.size = 12345;
+    info.sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    info.created_at = "2026-06-11T00:00:00Z";
+
+    const auto serialized = mini_oss::serializeObjectInfo(info);
+    const auto parsed = mini_oss::deserializeObjectInfo(serialized);
+    expect(parsed.has_value(), "redis metadata serialization should parse");
+    expect(parsed->id == info.id, "redis metadata id should round-trip");
+    expect(parsed->filename == info.filename, "redis metadata filename should round-trip");
+    expect(parsed->path == info.path, "redis metadata path should round-trip");
+    expect(parsed->size == info.size, "redis metadata size should round-trip");
+    expect(parsed->sha256 == info.sha256, "redis metadata sha256 should round-trip");
+    expect(parsed->created_at == info.created_at, "redis metadata timestamp should round-trip");
+    expect(!mini_oss::deserializeObjectInfo("bad-data").has_value(),
+           "invalid redis metadata should fail parsing");
 }
 
 void testObjectStore()
@@ -266,6 +307,7 @@ void runAllTests()
     testHttpResponse();
     testRouter();
     testConfig();
+    testRedisMetadataSerialization();
     testObjectStore();
 }
 

@@ -1,6 +1,6 @@
 # Mini-OSS Deployment
 
-This document describes two reproducible ways to run Mini-OSS: local script deployment and Docker deployment.
+This document describes two reproducible ways to run Mini-OSS: local script deployment and Docker deployment. Redis can be enabled as an optional metadata cache.
 
 ## Deployment Goals
 
@@ -57,6 +57,13 @@ Run the full smoke test:
 ./scripts/smoke_test_http.py
 ```
 
+Run the Redis cache smoke test when Redis is available:
+
+```bash
+redis-cli ping
+./scripts/smoke_test_redis_cache.py
+```
+
 ## Docker Image
 
 Build the image:
@@ -88,7 +95,7 @@ Runtime paths:
 /data/logs
 ```
 
-The Docker config uses `dev-token` for local object API authentication:
+The Docker config uses `dev-token` for local object API authentication and enables Redis metadata cache with host `redis`:
 
 ```bash
 curl -i -X POST http://127.0.0.1:8080/objects \
@@ -122,6 +129,7 @@ View logs:
 
 ```bash
 docker compose logs -f mini-oss
+docker compose logs -f redis
 ```
 
 Stop:
@@ -144,6 +152,7 @@ docker compose down -v
 - stores objects under `/data/storage`
 - writes logs under `/data/logs`
 - enables token auth with `dev-token`
+- enables Redis metadata cache with `redis:6379`
 
 For real deployment, mount a custom config:
 
@@ -163,6 +172,7 @@ Recommended checks after deployment:
 ```bash
 curl -i http://127.0.0.1:8080/health
 curl -i http://127.0.0.1:8080/metrics
+redis-cli ping
 ```
 
 For local non-container runs:
@@ -170,6 +180,7 @@ For local non-container runs:
 ```bash
 ctest --test-dir build --output-on-failure
 ./scripts/smoke_test_http.py
+./scripts/smoke_test_redis_cache.py
 ./scripts/benchmark_http.py
 ```
 
@@ -180,3 +191,4 @@ ctest --test-dir build --output-on-failure
 - Storage and logs are mounted as volumes, which keeps runtime data outside the container layer.
 - Health checks use `/health`, matching the service's public liveness endpoint.
 - Startup scripts provide a lightweight local deployment path for debugging without Docker.
+- Redis is treated as a cache, not the source of truth; SQLite fallback keeps object APIs available when Redis is unavailable.

@@ -53,6 +53,21 @@ void Metrics::recordObjectUpload(std::size_t body_bytes, bool streamed)
     }
 }
 
+void Metrics::metadataCacheHit()
+{
+    metadata_cache_hits_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Metrics::metadataCacheMiss()
+{
+    metadata_cache_misses_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Metrics::metadataCacheError()
+{
+    metadata_cache_errors_.fetch_add(1, std::memory_order_relaxed);
+}
+
 void Metrics::recordRequest(int status_code, std::size_t request_bytes, std::size_t response_bytes,
                             std::uint64_t duration_ms)
 {
@@ -105,6 +120,9 @@ MetricsSnapshot Metrics::snapshot() const
     snapshot.request_bytes = request_bytes_.load(std::memory_order_relaxed);
     snapshot.response_bytes = response_bytes_.load(std::memory_order_relaxed);
     snapshot.total_latency_ms = total_latency_ms_.load(std::memory_order_relaxed);
+    snapshot.metadata_cache_hits = metadata_cache_hits_.load(std::memory_order_relaxed);
+    snapshot.metadata_cache_misses = metadata_cache_misses_.load(std::memory_order_relaxed);
+    snapshot.metadata_cache_errors = metadata_cache_errors_.load(std::memory_order_relaxed);
     if (snapshot.total_requests > 0) {
         snapshot.average_latency_ms =
             static_cast<double>(snapshot.total_latency_ms) / snapshot.total_requests;
@@ -140,7 +158,10 @@ std::string Metrics::toJson() const
         << "\"request_bytes\":" << data.request_bytes << ","
         << "\"response_bytes\":" << data.response_bytes << ","
         << "\"total_latency_ms\":" << data.total_latency_ms << ","
-        << "\"average_latency_ms\":" << data.average_latency_ms
+        << "\"average_latency_ms\":" << data.average_latency_ms << ","
+        << "\"metadata_cache_hits\":" << data.metadata_cache_hits << ","
+        << "\"metadata_cache_misses\":" << data.metadata_cache_misses << ","
+        << "\"metadata_cache_errors\":" << data.metadata_cache_errors
         << "}";
     return oss.str();
 }

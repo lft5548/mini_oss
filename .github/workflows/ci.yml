@@ -14,7 +14,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake libssl-dev libsqlite3-dev python3
+          sudo apt-get install -y build-essential cmake pkg-config libssl-dev libsqlite3-dev libhiredis-dev redis-server redis-tools python3
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -27,3 +27,8 @@ jobs:
 
       - name: Smoke test
         run: ./scripts/smoke_test_http.py
+
+      - name: Redis cache smoke test
+        run: |
+          redis-server --daemonize yes
+          ./scripts/smoke_test_redis_cache.py

@@ -10,16 +10,18 @@ sudo apt install -y \
   gdb \
   valgrind \
   pkg-config \
-  curl
+  curl \
+  redis-server \
+  redis-tools
 
 sudo apt install -y \
   libssl-dev \
   sqlite3 \
   libsqlite3-dev \
+  libhiredis-dev \
   apache2-utils \
   wrk
 
 echo "Base dependencies installed."
 echo "Optional later:"
-echo "  sudo apt install -y redis-server"
 echo "  sudo apt install -y mysql-server libmysqlclient-dev"

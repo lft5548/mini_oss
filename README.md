@@ -18,7 +18,7 @@ HTTP APIs, object metadata, file integrity verification, logging, monitoring, an
 - HTTP request parsing and response building
 - SQLite first, MySQL later if needed
 - OpenSSL SHA-256
-- Redis cache as an optional extension
+- Redis metadata cache with SQLite fallback
 - CMake
 - curl, ab/wrk for testing and benchmarking
 
@@ -36,7 +36,7 @@ HTTP APIs, object metadata, file integrity verification, logging, monitoring, an
 3. Metadata: store object metadata in SQLite.
 4. Reliability: SHA-256 verification, timeout cleanup, error handling.
 5. Engineering: async-style logging, config file, metrics endpoint, benchmark report.
-6. Extensions: token auth, instant upload by SHA-256, chunk upload, Redis cache.
+6. Extensions: token auth, instant upload by SHA-256, Redis metadata cache, chunk upload.
 
 ## Build
 
@@ -75,7 +75,8 @@ Command-line options override the config file:
   --max-request-bytes 10485760 --max-upload-bytes 134217728 \
   --stream-upload-threshold-bytes 1048576 --max-connections 1024 \
   --thread-queue-limit 1024 --request-timeout-ms 5000 \
-  --upload-timeout-ms 30000 --auth-token dev-token
+  --upload-timeout-ms 30000 --auth-token dev-token \
+  --redis-enabled true --redis-host 127.0.0.1 --redis-port 6379
 ```
 
 The current MVP supports:
@@ -103,6 +104,7 @@ The current MVP supports:
 - large `POST /objects` request bodies streamed to `storage/tmp_uploads` before metadata processing
 - resource guards for max connections, worker queue length, slow request timeout, and slow upload timeout
 - SQLite metadata persistence under `storage/metadata.db`
+- optional Redis metadata cache for object lookup and SHA-256 dedup index lookup
 
 ## Tests
 
@@ -142,6 +144,7 @@ Expected checks:
 - CTest unit tests and a GitHub Actions workflow provide build, unit-test, and smoke-test quality gates
 - Dockerfile, docker compose, and local start/stop/status scripts provide repeatable deployment paths
 - object APIs return `401 Unauthorized` when auth token is configured and missing
+- Redis cache smoke test validates cache hit/miss/error metrics and SQLite fallback
 
 ## Benchmark
 
@@ -157,6 +160,38 @@ The generated report is written to `docs/benchmark.md` and includes QPS, mean la
 ## Authentication
 
 If `auth.token` or `--auth-token` is set, object APIs require either `Authorization: Bearer <token>` or `X-Auth-Token: <token>`. `GET /health` and `GET /metrics` remain public.
+
+## Redis Metadata Cache
+
+Redis is an optional acceleration layer for object metadata. SQLite remains the source of truth, so uploads, downloads, and deletes continue to work when Redis is disabled or temporarily unavailable.
+
+Enable it in `config.ini`:
+
+```ini
+[redis]
+enabled = true
+host = 127.0.0.1
+port = 6379
+db = 0
+key_prefix = mini_oss
+ttl_seconds = 300
+connect_timeout_ms = 100
+io_timeout_ms = 100
+```
+
+Cached keys:
+
+- `mini_oss:object:{id}` stores serialized object metadata.
+- `mini_oss:sha:{sha256}:{size}` maps a content hash and size to an object id for deduplication and instant upload.
+
+`GET /metrics` exposes `metadata_cache_hits`, `metadata_cache_misses`, and `metadata_cache_errors`.
+
+Redis smoke test:
+
+```bash
+redis-cli ping
+./scripts/smoke_test_redis_cache.py
+```
 
 ## Large Uploads
 
@@ -194,7 +229,7 @@ curl -i -X POST http://127.0.0.1:8080/objects \
 
 ## Metrics
 
-`GET /metrics` returns runtime service counters in JSON format, including active/peak/total connections, rejected connections, total requests, success/failure counts, HTTP status-class distribution, worker-queue rejections, request/upload timeouts, object upload counters, async log dropped entries, request/response bytes, total latency, and average latency.
+`GET /metrics` returns runtime service counters in JSON format, including active/peak/total connections, rejected connections, total requests, success/failure counts, HTTP status-class distribution, worker-queue rejections, request/upload timeouts, object upload counters, Redis metadata cache hit/miss/error counters, async log dropped entries, request/response bytes, total latency, and average latency.
 
 ```bash
 curl -i http://127.0.0.1:8080/metrics

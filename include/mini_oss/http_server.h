@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mini_oss/config.h"
 #include "mini_oss/logger.h"
 #include "mini_oss/metrics.h"
 #include "mini_oss/object_store.h"
@@ -27,7 +28,8 @@ public:
                std::size_t stream_upload_threshold_bytes = 1024 * 1024,
                std::size_t max_connections = 1024, std::size_t thread_queue_limit = 1024,
                std::uint64_t request_timeout_ms = 5000,
-               std::uint64_t upload_timeout_ms = 30000);
+               std::uint64_t upload_timeout_ms = 30000,
+               RedisConfig redis_config = {});
     ~HttpServer();
 
     HttpServer(const HttpServer&) = delete;

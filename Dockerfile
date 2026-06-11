@@ -7,6 +7,8 @@ RUN apt-get update \
         build-essential \
         ca-certificates \
         cmake \
+        pkg-config \
+        libhiredis-dev \
         libsqlite3-dev \
         libssl-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -30,6 +32,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        libhiredis1.1.0 \
         libsqlite3-0 \
         libssl3t64 \
     && rm -rf /var/lib/apt/lists/* \

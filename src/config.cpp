@@ -47,6 +47,21 @@ bool parseUnsigned(const std::string& value, std::uint64_t& parsed, std::string&
     }
 }
 
+bool parseBool(const std::string& value, bool& parsed, std::string& error)
+{
+    const std::string lower = lowerCopy(value);
+    if (lower == "1" || lower == "true" || lower == "yes" || lower == "on") {
+        parsed = true;
+        return true;
+    }
+    if (lower == "0" || lower == "false" || lower == "no" || lower == "off") {
+        parsed = false;
+        return true;
+    }
+    error = "invalid boolean: " + value;
+    return false;
+}
+
 bool setConfigValue(AppConfig& config, const std::string& key, const std::string& value,
                     std::string& error)
 {
@@ -180,6 +195,83 @@ bool setConfigValue(AppConfig& config, const std::string& key, const std::string
 
     if (key == "auth_token" || key == "auth.token" || key == "server.auth_token") {
         config.auth_token = value;
+        return true;
+    }
+
+    if (key == "redis.enabled" || key == "cache.redis_enabled") {
+        bool enabled = false;
+        if (!parseBool(value, enabled, error)) {
+            return false;
+        }
+        config.redis.enabled = enabled;
+        return true;
+    }
+
+    if (key == "redis.host" || key == "cache.redis_host") {
+        if (value.empty()) {
+            error = "redis host cannot be empty";
+            return false;
+        }
+        config.redis.host = value;
+        return true;
+    }
+
+    if (key == "redis.port" || key == "cache.redis_port") {
+        if (!parseUnsigned(value, parsed, error) || parsed == 0 || parsed > 65535) {
+            error = "invalid redis port: " + value;
+            return false;
+        }
+        config.redis.port = static_cast<std::uint16_t>(parsed);
+        return true;
+    }
+
+    if (key == "redis.password" || key == "cache.redis_password") {
+        config.redis.password = value;
+        return true;
+    }
+
+    if (key == "redis.db" || key == "cache.redis_db") {
+        if (!parseUnsigned(value, parsed, error)) {
+            error = "invalid redis db: " + value;
+            return false;
+        }
+        config.redis.db = static_cast<std::uint32_t>(parsed);
+        return true;
+    }
+
+    if (key == "redis.key_prefix" || key == "cache.redis_key_prefix") {
+        if (value.empty()) {
+            error = "redis key_prefix cannot be empty";
+            return false;
+        }
+        config.redis.key_prefix = value;
+        return true;
+    }
+
+    if (key == "redis.ttl_seconds" || key == "cache.redis_ttl_seconds") {
+        if (!parseUnsigned(value, parsed, error)) {
+            error = "invalid redis ttl_seconds: " + value;
+            return false;
+        }
+        config.redis.ttl_seconds = parsed;
+        return true;
+    }
+
+    if (key == "redis.connect_timeout_ms" || key == "cache.redis_connect_timeout_ms") {
+        if (!parseUnsigned(value, parsed, error)) {
+            error = "invalid redis connect_timeout_ms: " + value;
+            return false;
+        }
+        config.redis.connect_timeout_ms = parsed;
+        return true;
+    }
+
+    if (key == "redis.io_timeout_ms" || key == "cache.redis_io_timeout_ms") {
+        if (!parseUnsigned(value, parsed, error)) {
+            error = "invalid redis io_timeout_ms: " + value;
+            return false;
+        }
+        config.redis.io_timeout_ms = parsed;
         return true;
     }
 

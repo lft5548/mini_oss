@@ -9,6 +9,8 @@ project(mini_oss
 find_package(OpenSSL REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(HIREDIS REQUIRED IMPORTED_TARGET hiredis)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +24,7 @@ set(MINI_OSS_CORE_SOURCES
     src/metadata_store.cpp
     src/metrics.cpp
     src/object_store.cpp
+    src/redis_metadata_cache.cpp
     src/router.cpp
     src/thread_pool.cpp
 )
@@ -44,6 +47,7 @@ target_link_libraries(mini_oss_core PUBLIC
     OpenSSL::Crypto
     SQLite::SQLite3
     Threads::Threads
+    PkgConfig::HIREDIS
 )
 
 add_executable(mini_oss

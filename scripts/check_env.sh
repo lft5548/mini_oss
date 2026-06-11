@@ -15,6 +15,8 @@ tools=(
   ab
   wrk
   pkg-config
+  redis-server
+  redis-cli
 )
 
 for tool in "${tools[@]}"; do
@@ -24,3 +26,9 @@ for tool in "${tools[@]}"; do
     printf "%-12s MISSING\n" "${tool}"
   fi
 done
+
+if pkg-config --exists hiredis; then
+  printf "%-12s OK (%s)\n" "hiredis" "$(pkg-config --modversion hiredis)"
+else
+  printf "%-12s MISSING\n" "hiredis"
+fi

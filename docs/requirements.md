@@ -57,6 +57,7 @@ Current MVP status:
 - Large upload streaming with temporary files and incremental SHA-256: done.
 - Resource guards for connection count, worker queue length, request timeout, and upload timeout: done.
 - Dockerfile, docker compose, startup scripts, and deployment docs: done.
+- Redis metadata cache with SQLite fallback and cache metrics: done.
 
 Known limitations before the next phase:
 
@@ -66,7 +67,7 @@ Known limitations before the next phase:
 - Deduplication is single-node metadata deduplication; later versions can add content-addressed storage layout and garbage collection jobs.
 - No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.
 - Large response sending still happens in the event loop; later versions can add EPOLLOUT output buffers.
-- No Redis cache yet; later versions can cache object metadata and SHA-256 dedup indexes with SQLite fallback.
+- Redis cache is single-node cache-aside; TTL bounds stale keys after failed invalidation.
 
 ## Advanced Scope
 

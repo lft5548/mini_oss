@@ -8,7 +8,7 @@ Mini-OSS is a single-node Linux C++ object storage service. The project is inten
 - Support common object-storage workflows: upload, list, download, Range download, delete, deduplication, and instant upload.
 - Keep the service stable under imperfect clients through connection limits, bounded queues, request timeouts, upload timeouts, and temporary-file cleanup.
 - Make runtime behavior explainable through access logs, slow logs, error logs, `/metrics`, smoke tests, unit tests, and benchmark reports.
-- Keep the current version single-node and understandable, while providing reproducible deployment artifacts and leaving clear extension points for Redis cache, EPOLLOUT response buffers, and future distributed storage features.
+- Keep the current version single-node and understandable, while providing reproducible deployment artifacts and Redis metadata cache integration, and leaving clear extension points for EPOLLOUT response buffers and future distributed storage features.
 
 ## High-Level Architecture
 
@@ -36,6 +36,10 @@ ObjectStore
   - dedup/instant upload
   - Range download
         |
+        v
+Redis Metadata Cache(optional)
+        |
+        | miss/fallback
         v
 MetadataStore(SQLite WAL) + Linux File System
 
@@ -179,6 +183,33 @@ Mini-OSS deduplicates by `(sha256, size)`:
 
 This design is easy to explain: metadata can have multiple logical objects pointing to one physical file.
 
+### Redis Metadata Cache
+
+Redis is an optional cache in front of SQLite metadata reads. SQLite remains the authoritative store.
+
+Cached keys:
+
+- `prefix:object:{id}` stores serialized `ObjectInfo` for download and delete lookup.
+- `prefix:sha:{sha256}:{size}` stores an object id for deduplication and instant upload lookup.
+
+Read strategy:
+
+```text
+1. try Redis object/SHA index
+2. on hit, return cached metadata
+3. on miss or Redis error, query SQLite
+4. when SQLite succeeds, backfill Redis
+```
+
+Write/delete strategy:
+
+- New object metadata is inserted into SQLite first, then written to Redis.
+- Delete removes SQLite metadata first, then invalidates object and SHA index keys.
+- Cache keys use TTL, so a failed invalidation has a bounded stale window.
+- If Redis is down, the request still succeeds through SQLite and increments cache error metrics.
+
+This gives a clear backend tradeoff: correctness depends on SQLite, while Redis improves hot metadata and dedup lookup latency.
+
 ## API Surface
 
 ```text
@@ -237,6 +268,7 @@ The logger uses a bounded queue and a background thread. Queue overflow uses dro
 - request and upload timeouts
 - object upload and streamed upload counters
 - uploaded bytes and streamed uploaded bytes
+- metadata cache hits, misses, and errors
 - request and response bytes
 - total and average latency
 - async log dropped entries

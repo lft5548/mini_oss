@@ -10,6 +10,8 @@ services:
     volumes:
       - mini_oss_storage:/data/storage
       - mini_oss_logs:/data/logs
+    depends_on:
+      - redis
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
@@ -17,6 +19,11 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    container_name: mini-oss-redis
+    restart: unless-stopped
 
 volumes:
   mini_oss_storage:

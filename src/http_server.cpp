@@ -83,7 +83,8 @@ HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
                        std::size_t max_request_bytes, std::size_t max_upload_bytes,
                        std::size_t stream_upload_threshold_bytes,
                        std::size_t max_connections, std::size_t thread_queue_limit,
-                       std::uint64_t request_timeout_ms, std::uint64_t upload_timeout_ms)
+                       std::uint64_t request_timeout_ms, std::uint64_t upload_timeout_ms,
+                       RedisConfig redis_config)
     : port_(port)
     , logger_(logger)
     , slow_request_ms_(slow_request_ms)
@@ -96,7 +97,7 @@ HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
           stream_upload_threshold_bytes == 0 ? 0 : stream_upload_threshold_bytes)
     , request_timeout_ms_(request_timeout_ms)
     , upload_timeout_ms_(upload_timeout_ms)
-    , object_store_(std::move(storage_dir))
+    , object_store_(std::move(storage_dir), std::move(redis_config), &metrics_)
     , thread_pool_(worker_threads, thread_queue_limit)
 {
     if (stream_upload_threshold_bytes_ > max_upload_bytes_) {

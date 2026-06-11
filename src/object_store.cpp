@@ -82,11 +82,12 @@ std::string objectInfoJson(const ObjectInfo& info, const std::string& extra_fiel
 
 } // namespace
 
-ObjectStore::ObjectStore(std::filesystem::path root_dir)
+ObjectStore::ObjectStore(std::filesystem::path root_dir, RedisConfig redis_config, Metrics* metrics)
     : root_dir_(std::move(root_dir))
     , object_dir_(root_dir_ / "objects")
     , temp_upload_dir_(root_dir_ / "tmp_uploads")
     , metadata_store_(root_dir_ / "metadata.db")
+    , metadata_cache_(std::move(redis_config), metrics)
 {
     std::filesystem::create_directories(object_dir_);
     std::filesystem::create_directories(temp_upload_dir_);
@@ -107,7 +108,7 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
     const std::uint64_t object_size = request.body.size();
     const std::string object_sha256 = sha256Hex(request.body);
     std::string error;
-    const auto existing = metadata_store_.findObjectBySha256(object_sha256, object_size, error);
+    const auto existing = findObjectBySha256Cached(object_sha256, object_size, error);
     if (!error.empty()) {
         return HttpResponse::text(500, "Internal Server Error",
                                   "cannot query object metadata: " + error + "\n");
@@ -148,7 +149,7 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
     info.sha256 = object_sha256;
     info.created_at = now();
 
-    if (!metadata_store_.insertObject(info, error)) {
+    if (!insertObjectMetadata(info, error)) {
         std::error_code ec;
         std::filesystem::remove(path, ec);
         return HttpResponse::text(500, "Internal Server Error", "cannot save object metadata: " + error + "\n");
@@ -172,7 +173,7 @@ HttpResponse ObjectStore::createInstantObject(const HttpRequest& request)
     }
 
     std::string error;
-    const auto existing = metadata_store_.findObjectBySha256(sha256, size.value(), error);
+    const auto existing = findObjectBySha256Cached(sha256, size.value(), error);
     if (!error.empty()) {
         return HttpResponse::text(500, "Internal Server Error",
                                   "cannot query object metadata: " + error + "\n");
@@ -224,7 +225,7 @@ HttpResponse ObjectStore::getObject(const HttpRequest& request)
     }
 
     std::string error;
-    const auto info = metadata_store_.getObject(id, error);
+    const auto info = getObjectMetadata(id, error);
     if (!error.empty()) {
         return error == "invalid object id" ? HttpResponse::badRequest(error)
                                             : HttpResponse::text(500, "Internal Server Error",
@@ -276,7 +277,7 @@ HttpResponse ObjectStore::deleteObject(const HttpRequest& request)
     }
 
     std::string error;
-    const auto info = metadata_store_.getObject(id, error);
+    const auto info = getObjectMetadata(id, error);
     if (!error.empty()) {
         return error == "invalid object id" ? HttpResponse::badRequest(error)
                                             : HttpResponse::text(500, "Internal Server Error",
@@ -286,7 +287,7 @@ HttpResponse ObjectStore::deleteObject(const HttpRequest& request)
         return HttpResponse::notFound();
     }
 
-    if (!metadata_store_.deleteObject(id, error)) {
+    if (!deleteObjectMetadata(info.value(), error)) {
         return error == "invalid object id" ? HttpResponse::badRequest(error)
                                             : HttpResponse::text(500, "Internal Server Error",
                                                                  "cannot delete object metadata: " + error + "\n");
@@ -530,7 +531,7 @@ HttpResponse ObjectStore::createObjectFromFileBody(const HttpRequest& request)
     }
 
     std::string error;
-    const auto existing = metadata_store_.findObjectBySha256(object_sha256.value(), object_size, error);
+    const auto existing = findObjectBySha256Cached(object_sha256.value(), object_size, error);
     if (!error.empty()) {
         cleanup_temp();
         return HttpResponse::text(500, "Internal Server Error",
@@ -579,7 +580,7 @@ HttpResponse ObjectStore::createObjectFromFileBody(const HttpRequest& request)
     info.sha256 = object_sha256.value();
     info.created_at = now();
 
-    if (!metadata_store_.insertObject(info, error)) {
+    if (!insertObjectMetadata(info, error)) {
         std::error_code remove_error;
         std::filesystem::remove(path, remove_error);
         return HttpResponse::text(500, "Internal Server Error", "cannot save object metadata: " + error + "\n");
@@ -605,7 +606,7 @@ HttpResponse ObjectStore::createMetadataAlias(const ObjectInfo& source, const st
     info.sha256 = source.sha256;
     info.created_at = now();
 
-    if (!metadata_store_.insertObject(info, error)) {
+    if (!insertObjectMetadata(info, error)) {
         return HttpResponse::text(500, "Internal Server Error",
                                   "cannot save object metadata: " + error + "\n");
     }
@@ -615,6 +616,71 @@ HttpResponse ObjectStore::createMetadataAlias(const ObjectInfo& source, const st
           << "\"instant_upload\":" << (instant_upload ? "true" : "false") << ','
           << "\"source_id\":\"" << jsonEscape(source.id) << "\"";
     return HttpResponse::json(201, "Created", objectInfoJson(info, extra.str()) + "\n");
+}
+
+std::optional<ObjectInfo> ObjectStore::getObjectMetadata(const std::string& id, std::string& error)
+{
+    const auto cached = metadata_cache_.getObject(id);
+    if (cached.has_value()) {
+        return cached;
+    }
+
+    auto info = metadata_store_.getObject(id, error);
+    if (error.empty() && info.has_value()) {
+        metadata_cache_.putObject(info.value());
+        metadata_cache_.putShaIndex(info->sha256, info->size, info->id);
+    }
+    return info;
+}
+
+std::optional<ObjectInfo> ObjectStore::findObjectBySha256Cached(const std::string& sha256,
+                                                               std::uint64_t size,
+                                                               std::string& error)
+{
+    const auto cached_id = metadata_cache_.getShaIndex(sha256, size);
+    if (cached_id.has_value()) {
+        auto cached_object = metadata_cache_.getObject(cached_id.value());
+        if (cached_object.has_value() && cached_object->sha256 == sha256
+            && cached_object->size == size) {
+            return cached_object;
+        }
+
+        auto db_object = metadata_store_.getObject(cached_id.value(), error);
+        if (!error.empty()) {
+            return std::nullopt;
+        }
+        if (db_object.has_value() && db_object->sha256 == sha256 && db_object->size == size) {
+            metadata_cache_.putObject(db_object.value());
+            return db_object;
+        }
+        metadata_cache_.deleteShaIndex(sha256, size);
+    }
+
+    auto info = metadata_store_.findObjectBySha256(sha256, size, error);
+    if (error.empty() && info.has_value()) {
+        metadata_cache_.putObject(info.value());
+        metadata_cache_.putShaIndex(sha256, size, info->id);
+    }
+    return info;
+}
+
+bool ObjectStore::insertObjectMetadata(const ObjectInfo& info, std::string& error)
+{
+    if (!metadata_store_.insertObject(info, error)) {
+        return false;
+    }
+    metadata_cache_.putObject(info);
+    metadata_cache_.putShaIndex(info.sha256, info.size, info.id);
+    return true;
+}
+
+bool ObjectStore::deleteObjectMetadata(const ObjectInfo& info, std::string& error)
+{
+    if (!metadata_store_.deleteObject(info.id, error)) {
+        return false;
+    }
+    metadata_cache_.deleteObject(info);
+    return true;
 }
 
 std::string ObjectStore::now()

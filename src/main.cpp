@@ -38,7 +38,10 @@ void printUsage()
                  "[--slow-request-ms 200] [--max-connections 1024] [--thread-queue-limit 1024] "
                  "[--max-request-bytes bytes] [--max-upload-bytes bytes] "
                  "[--stream-upload-threshold-bytes bytes] [--request-timeout-ms 5000] "
-                 "[--upload-timeout-ms 30000] [--auth-token token] [--version]\n";
+                 "[--upload-timeout-ms 30000] [--auth-token token] "
+                 "[--redis-enabled true|false] [--redis-host 127.0.0.1] "
+                 "[--redis-port 6379] [--redis-db 0] [--redis-key-prefix mini_oss] "
+                 "[--redis-ttl-seconds 300] [--version]\n";
 }
 }
 
@@ -60,6 +63,15 @@ int main(int argc, char* argv[])
     std::optional<std::uint64_t> request_timeout_ms_override;
     std::optional<std::uint64_t> upload_timeout_ms_override;
     std::optional<std::string> auth_token_override;
+    std::optional<bool> redis_enabled_override;
+    std::optional<std::string> redis_host_override;
+    std::optional<std::uint16_t> redis_port_override;
+    std::optional<std::string> redis_password_override;
+    std::optional<std::uint32_t> redis_db_override;
+    std::optional<std::string> redis_key_prefix_override;
+    std::optional<std::uint64_t> redis_ttl_seconds_override;
+    std::optional<std::uint64_t> redis_connect_timeout_ms_override;
+    std::optional<std::uint64_t> redis_io_timeout_ms_override;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -149,6 +161,57 @@ int main(int argc, char* argv[])
             upload_timeout_ms_override = value;
         } else if (arg == "--auth-token" && i + 1 < argc) {
             auth_token_override = argv[++i];
+        } else if (arg == "--redis-enabled" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            if (value == "1" || value == "true" || value == "yes" || value == "on") {
+                redis_enabled_override = true;
+            } else if (value == "0" || value == "false" || value == "no" || value == "off") {
+                redis_enabled_override = false;
+            } else {
+                std::cerr << "Invalid redis enabled flag\n";
+                return 1;
+            }
+        } else if (arg == "--redis-host" && i + 1 < argc) {
+            redis_host_override = argv[++i];
+        } else if (arg == "--redis-port" && i + 1 < argc) {
+            std::uint64_t value = 0;
+            if (!parseUnsigned(argv[++i], value) || value == 0 || value > 65535) {
+                std::cerr << "Invalid redis port\n";
+                return 1;
+            }
+            redis_port_override = static_cast<std::uint16_t>(value);
+        } else if (arg == "--redis-password" && i + 1 < argc) {
+            redis_password_override = argv[++i];
+        } else if (arg == "--redis-db" && i + 1 < argc) {
+            std::uint64_t value = 0;
+            if (!parseUnsigned(argv[++i], value)) {
+                std::cerr << "Invalid redis db\n";
+                return 1;
+            }
+            redis_db_override = static_cast<std::uint32_t>(value);
+        } else if (arg == "--redis-key-prefix" && i + 1 < argc) {
+            redis_key_prefix_override = argv[++i];
+        } else if (arg == "--redis-ttl-seconds" && i + 1 < argc) {
+            std::uint64_t value = 0;
+            if (!parseUnsigned(argv[++i], value)) {
+                std::cerr << "Invalid redis ttl seconds\n";
+                return 1;
+            }
+            redis_ttl_seconds_override = value;
+        } else if (arg == "--redis-connect-timeout-ms" && i + 1 < argc) {
+            std::uint64_t value = 0;
+            if (!parseUnsigned(argv[++i], value)) {
+                std::cerr << "Invalid redis connect timeout\n";
+                return 1;
+            }
+            redis_connect_timeout_ms_override = value;
+        } else if (arg == "--redis-io-timeout-ms" && i + 1 < argc) {
+            std::uint64_t value = 0;
+            if (!parseUnsigned(argv[++i], value)) {
+                std::cerr << "Invalid redis io timeout\n";
+                return 1;
+            }
+            redis_io_timeout_ms_override = value;
         } else if (arg == "--version") {
             std::cout << "mini_oss " << MINI_OSS_VERSION << '\n';
             return 0;
@@ -216,6 +279,33 @@ int main(int argc, char* argv[])
     if (auth_token_override.has_value()) {
         config.auth_token = auth_token_override.value();
     }
+    if (redis_enabled_override.has_value()) {
+        config.redis.enabled = redis_enabled_override.value();
+    }
+    if (redis_host_override.has_value()) {
+        config.redis.host = redis_host_override.value();
+    }
+    if (redis_port_override.has_value()) {
+        config.redis.port = redis_port_override.value();
+    }
+    if (redis_password_override.has_value()) {
+        config.redis.password = redis_password_override.value();
+    }
+    if (redis_db_override.has_value()) {
+        config.redis.db = redis_db_override.value();
+    }
+    if (redis_key_prefix_override.has_value()) {
+        config.redis.key_prefix = redis_key_prefix_override.value();
+    }
+    if (redis_ttl_seconds_override.has_value()) {
+        config.redis.ttl_seconds = redis_ttl_seconds_override.value();
+    }
+    if (redis_connect_timeout_ms_override.has_value()) {
+        config.redis.connect_timeout_ms = redis_connect_timeout_ms_override.value();
+    }
+    if (redis_io_timeout_ms_override.has_value()) {
+        config.redis.io_timeout_ms = redis_io_timeout_ms_override.value();
+    }
 
     mini_oss::Logger logger(config.log_dir, config.log_queue_limit);
     if (!logger.ready()) {
@@ -229,6 +319,7 @@ int main(int argc, char* argv[])
     std::cout << "Storage: " << config.storage_dir << '\n';
     std::cout << "Logs: " << config.log_dir << '\n';
     std::cout << "Log queue limit: " << config.log_queue_limit << '\n';
+    std::cout << "Redis cache: " << (config.redis.enabled ? "enabled" : "disabled") << '\n';
     logger.info("Mini-OSS starting");
 
     std::signal(SIGINT, handleSignal);
@@ -239,7 +330,8 @@ int main(int argc, char* argv[])
                                 config.max_request_bytes, config.max_upload_bytes,
                                 config.stream_upload_threshold_bytes,
                                 config.max_connections, config.thread_queue_limit,
-                                config.request_timeout_ms, config.upload_timeout_ms);
+                                config.request_timeout_ms, config.upload_timeout_ms,
+                                config.redis);
     if (!server.start()) {
         return 1;
     }
