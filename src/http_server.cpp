@@ -300,6 +300,7 @@ void HttpServer::acceptClients()
         const std::string remote_string = remote_addr.str();
 
         if (max_connections_ > 0 && clients_.size() >= max_connections_) {
+            metrics_.connectionRejected();
             const auto response = HttpResponse::text(503, "Service Unavailable",
                                                      "too many connections\n")
                                       .serialize();
@@ -552,10 +553,20 @@ void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::str
         HttpResponse http_response = HttpResponse::badRequest("invalid request");
         const std::string method = httpMethodName(request.method);
         const std::string path = request.path;
+        const bool object_upload = request.method == HttpMethod::Post && request.path == "/objects";
+        const bool streamed_upload = request.body_in_file;
+        const std::size_t upload_body_size = request.body_in_file
+            ? static_cast<std::size_t>(request.body_size)
+            : request.body.size();
+
         if (!isAuthorized(request)) {
             http_response = HttpResponse::unauthorized();
         } else {
             http_response = router_.route(request);
+            if (object_upload && http_response.statusCode() >= 200
+                && http_response.statusCode() < 300) {
+                metrics_.recordObjectUpload(upload_body_size, streamed_upload);
+            }
         }
         cleanupTemporaryRequestBody(request);
 
@@ -567,6 +578,7 @@ void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::str
     });
 
     if (!queued) {
+        metrics_.queueRejected();
         cleanupTemporaryRequestBody(request);
         const auto response = HttpResponse::text(503, "Service Unavailable", "server busy\n");
         const auto serialized = response.serialize();
@@ -661,6 +673,11 @@ void HttpServer::closeTimedOutClients()
             continue;
         }
         const auto& state = client_it->second;
+        if (state.streaming_upload) {
+            metrics_.uploadTimedOut();
+        } else {
+            metrics_.requestTimedOut();
+        }
         const std::string method = state.header_parsed ? httpMethodName(state.header_request.method) : "-";
         const std::string path = state.header_parsed ? state.header_request.path : "-";
         const auto request_bytes = state.request_bytes == 0 ? state.buffer.size() : state.request_bytes;

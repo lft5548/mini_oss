@@ -149,6 +149,7 @@ def run_resource_guard_checks() -> dict[str, object]:
         results["tmp_upload_files"] = sorted(
             str(path) for path in (storage_dir / "tmp_uploads").glob("*.tmp")
         )
+        results["metrics"] = request("/metrics", port=port)
     finally:
         out, err = stop_server(proc)
         results["stdout"] = out
@@ -274,6 +275,8 @@ def main() -> int:
             f"/objects/{object_id}",
             headers={**AUTH_HEADERS, "Range": "bytes=999-1000"},
         )
+        upload_metrics = request("/metrics")
+        upload_metrics_body = json.loads(response_body(upload_metrics))
         stop_server(proc)
 
         proc = start_server(config_path)
@@ -337,6 +340,10 @@ def main() -> int:
     print(range_suffix)
     print("=== GET /objects/{id} invalid Range ===")
     print(range_invalid)
+    print("=== GET /metrics before restart ===")
+    print(upload_metrics)
+    print("=== parsed metrics before restart ===")
+    print(upload_metrics_body)
     print("=== concurrent upload ids ===")
     print(parallel_ids)
     print("=== GET /objects after restart ===")
@@ -371,6 +378,8 @@ def main() -> int:
     print(resource_guard["slow_upload"])
     print("=== resource guard tmp uploads ===")
     print(resource_guard["tmp_upload_files"])
+    print("=== resource guard metrics ===")
+    print(resource_guard["metrics"])
     print("=== server stdout ===")
     print(out)
     print("=== server stderr ===")
@@ -560,9 +569,24 @@ def main() -> int:
         return 1
     expected_metric_fields = {
         "active_connections",
+        "peak_active_connections",
+        "total_connections",
+        "rejected_connections",
         "total_requests",
         "success_requests",
         "failed_requests",
+        "status_1xx",
+        "status_2xx",
+        "status_3xx",
+        "status_4xx",
+        "status_5xx",
+        "queue_rejections",
+        "request_timeouts",
+        "upload_timeouts",
+        "object_upload_requests",
+        "streamed_upload_requests",
+        "uploaded_bytes",
+        "streamed_uploaded_bytes",
         "request_bytes",
         "response_bytes",
         "total_latency_ms",
@@ -583,6 +607,21 @@ def main() -> int:
     if metrics_body["request_bytes"] <= 0 or metrics_body["response_bytes"] <= 0:
         print("metrics byte counters invalid", file=sys.stderr)
         return 1
+    if metrics_body["status_2xx"] < 3 or metrics_body["status_4xx"] < 1:
+        print("metrics status class counters invalid", file=sys.stderr)
+        return 1
+    if upload_metrics_body["object_upload_requests"] < 2:
+        print("metrics object upload counter invalid", file=sys.stderr)
+        return 1
+    if upload_metrics_body["streamed_upload_requests"] < 1:
+        print("metrics streamed upload counter invalid", file=sys.stderr)
+        return 1
+    if upload_metrics_body["uploaded_bytes"] < len(large_body):
+        print("metrics uploaded bytes invalid", file=sys.stderr)
+        return 1
+    if upload_metrics_body["streamed_uploaded_bytes"] < len(large_body):
+        print("metrics streamed uploaded bytes invalid", file=sys.stderr)
+        return 1
     if "HTTP/1.1 200 OK" not in resource_guard["health"]:
         print("resource guard health check failed", file=sys.stderr)
         return 1
@@ -600,6 +639,19 @@ def main() -> int:
             f"timeout upload temp files were not cleaned: {resource_guard['tmp_upload_files']}",
             file=sys.stderr,
         )
+        return 1
+    resource_guard_metrics = json.loads(response_body(resource_guard["metrics"]))
+    if resource_guard_metrics["rejected_connections"] < 1:
+        print("resource guard rejected connection metric missing", file=sys.stderr)
+        return 1
+    if resource_guard_metrics["request_timeouts"] < 1:
+        print("resource guard request timeout metric missing", file=sys.stderr)
+        return 1
+    if resource_guard_metrics["upload_timeouts"] < 1:
+        print("resource guard upload timeout metric missing", file=sys.stderr)
+        return 1
+    if resource_guard_metrics["status_4xx"] < 2 or resource_guard_metrics["status_5xx"] < 1:
+        print("resource guard status class metrics invalid", file=sys.stderr)
         return 1
     access_text = access_log.read_text(encoding="utf-8") if access_log.exists() else ""
     error_text = error_log.read_text(encoding="utf-8") if error_log.exists() else ""

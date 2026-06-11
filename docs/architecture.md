@@ -93,8 +93,9 @@ Linux File System / SQLite / Redis(optional)
 ### Metrics
 
 - Thread-safe atomic counters for runtime service statistics.
-- Count active connections, total requests, success/failure requests, request bytes, response bytes, total latency, and average latency.
-- `HttpServer` updates metrics when a request completes and exposes them through `GET /metrics`.
+- Count active/peak/total connections, rejected connections, total requests, success/failure requests, HTTP status classes, request bytes, response bytes, total latency, and average latency.
+- Count worker-queue rejections, incomplete request timeouts, streaming upload timeouts, object upload requests, streamed upload requests, and uploaded bytes.
+- `HttpServer` updates metrics on connection lifecycle, resource guard rejection, timeout, upload completion, and request completion, then exposes snapshots through `GET /metrics`.
 
 ### Benchmarking
 

@@ -104,7 +104,7 @@ Expected checks:
 - slow/incomplete HTTP requests and uploads return `408 Request Timeout`
 - connection overflow returns `503 Service Unavailable`
 - `access.log`, `error.log`, and `slow.log` are generated
-- `/metrics` exposes runtime counters for requests, status results, bytes, latency, and active connections
+- `/metrics` exposes runtime counters for connections, status classes, resource rejections, timeouts, upload traffic, bytes, and latency
 - object APIs return `401 Unauthorized` when auth token is configured and missing
 
 ## Benchmark
@@ -158,7 +158,7 @@ curl -i -X POST http://127.0.0.1:8080/objects \
 
 ## Metrics
 
-`GET /metrics` returns runtime service counters in JSON format, including total requests, success/failure counts, active connections, request/response bytes, total latency, and average latency.
+`GET /metrics` returns runtime service counters in JSON format, including active/peak/total connections, rejected connections, total requests, success/failure counts, HTTP status-class distribution, worker-queue rejections, request/upload timeouts, object upload counters, request/response bytes, total latency, and average latency.
 
 ```bash
 curl -i http://127.0.0.1:8080/metrics
