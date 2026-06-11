@@ -2,6 +2,7 @@
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+import os
 import shutil
 import socket
 import subprocess
@@ -9,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 
+MINI_OSS_BINARY = os.environ.get("MINI_OSS_BINARY", "./build/mini_oss")
 
 def request(
     path: str,
@@ -697,7 +699,7 @@ def main() -> int:
 
 def start_server(config_path: Path) -> subprocess.Popen[str]:
     proc = subprocess.Popen(
-        ["./build/mini_oss", "--config", str(config_path), "--threads", "4"],
+        [MINI_OSS_BINARY, "--config", str(config_path), "--threads", "4"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

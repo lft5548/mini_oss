@@ -43,8 +43,9 @@ bool readField(const std::string& value, std::size_t& pos, std::string& field)
         return false;
     }
 
+    const std::string length_text = value.substr(pos, colon - pos);
     char* end = nullptr;
-    const auto length = std::strtoull(value.substr(pos, colon - pos).c_str(), &end, 10);
+    const auto length = std::strtoull(length_text.c_str(), &end, 10);
     if (end == nullptr || *end != '\0') {
         return false;
     }

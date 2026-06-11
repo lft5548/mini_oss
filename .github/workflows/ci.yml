@@ -32,3 +32,31 @@ jobs:
         run: |
           redis-server --daemonize yes
           ./scripts/smoke_test_redis_cache.py
+
+  sanitizer-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libssl-dev libsqlite3-dev libhiredis-dev redis-server redis-tools python3
+
+      - name: Configure with ASan and UBSan
+        run: cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DMINI_OSS_ENABLE_SANITIZERS=ON
+
+      - name: Build sanitizer target
+        run: cmake --build build-sanitize --parallel
+
+      - name: Unit tests with sanitizers
+        run: ctest --test-dir build-sanitize --output-on-failure
+
+      - name: Smoke test with sanitizers
+        run: MINI_OSS_BINARY=./build-sanitize/mini_oss ./scripts/smoke_test_http.py
+
+      - name: Redis cache smoke test with sanitizers
+        run: |
+          redis-server --daemonize yes
+          MINI_OSS_BINARY=./build-sanitize/mini_oss ./scripts/smoke_test_redis_cache.py

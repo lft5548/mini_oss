@@ -59,6 +59,7 @@ Current MVP status:
 - Resource guards for connection count, worker queue length, request timeout, and upload timeout: done.
 - Dockerfile, docker compose, startup scripts, and deployment docs: done.
 - Redis metadata cache with SQLite fallback and cache metrics: done.
+- ASan/UBSan sanitizer CI quality gate: done.
 
 Known limitations before the next phase:
 

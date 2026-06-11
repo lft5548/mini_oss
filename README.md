@@ -118,6 +118,16 @@ ctest --test-dir build --output-on-failure
 ./scripts/smoke_test_http.py
 ```
 
+Sanitizer quality gate:
+
+```bash
+cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DMINI_OSS_ENABLE_SANITIZERS=ON
+cmake --build build-sanitize
+ctest --test-dir build-sanitize --output-on-failure
+MINI_OSS_BINARY=./build-sanitize/mini_oss ./scripts/smoke_test_http.py
+MINI_OSS_BINARY=./build-sanitize/mini_oss ./scripts/smoke_test_redis_cache.py
+```
+
 ## Smoke Test
 
 ```bash
@@ -143,6 +153,7 @@ Expected checks:
 - `access.log`, `error.log`, and `slow.log` are generated
 - `/metrics` exposes runtime counters for connections, status classes, resource rejections, timeouts, upload traffic, bytes, and latency
 - CTest unit tests and a GitHub Actions workflow provide build, unit-test, and smoke-test quality gates
+- ASan/UBSan CI checks catch memory errors and undefined behavior in C++ code paths
 - Dockerfile, docker compose, and local start/stop/status scripts provide repeatable deployment paths
 - object APIs return `401 Unauthorized` when auth token is configured and missing
 - Redis cache smoke test validates cache hit/miss/error metrics and SQLite fallback

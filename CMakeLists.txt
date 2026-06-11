@@ -16,6 +16,30 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(MINI_OSS_ENABLE_SANITIZERS "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+
+function(mini_oss_apply_common_options target_name)
+    target_compile_options(${target_name} PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+
+    if(MINI_OSS_ENABLE_SANITIZERS)
+        if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            message(FATAL_ERROR "Sanitizers require GCC or Clang")
+        endif()
+        target_compile_options(${target_name} PRIVATE
+            -fsanitize=address,undefined
+            -fno-omit-frame-pointer
+            -fno-sanitize-recover=all
+        )
+        target_link_options(${target_name} PRIVATE
+            -fsanitize=address,undefined
+        )
+    endif()
+endfunction()
+
 set(MINI_OSS_CORE_SOURCES
     src/config.cpp
     src/http.cpp
@@ -37,11 +61,7 @@ target_include_directories(mini_oss_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include
 )
 
-target_compile_options(mini_oss_core PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
-)
+mini_oss_apply_common_options(mini_oss_core)
 
 target_link_libraries(mini_oss_core PUBLIC
     OpenSSL::Crypto
@@ -54,11 +74,7 @@ add_executable(mini_oss
     src/main.cpp
 )
 
-target_compile_options(mini_oss PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
-)
+mini_oss_apply_common_options(mini_oss)
 
 target_link_libraries(mini_oss PRIVATE
     mini_oss_core
@@ -71,11 +87,7 @@ if(BUILD_TESTING)
         tests/test_main.cpp
     )
 
-    target_compile_options(mini_oss_tests PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-    )
+    mini_oss_apply_common_options(mini_oss_tests)
 
     target_link_libraries(mini_oss_tests PRIVATE
         mini_oss_core

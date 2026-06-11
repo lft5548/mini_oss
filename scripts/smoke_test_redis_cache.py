@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -10,6 +11,7 @@ AUTH_HEADERS = {"Authorization": "Bearer redis-token"}
 PORT = 18084
 FALLBACK_PORT = 18085
 PREFIX = "mini_oss_smoke"
+MINI_OSS_BINARY = os.environ.get("MINI_OSS_BINARY", "./build/mini_oss")
 
 
 def request(
@@ -50,7 +52,7 @@ def redis(*args: str) -> str:
 
 def start_server(config_path: Path) -> subprocess.Popen[str]:
     proc = subprocess.Popen(
-        ["./build/mini_oss", "--config", str(config_path)],
+        [MINI_OSS_BINARY, "--config", str(config_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

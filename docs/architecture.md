@@ -318,6 +318,11 @@ Python smoke test
   - resource guards
   - logs and metrics
 
+Sanitizer CI
+  - AddressSanitizer for memory safety issues
+  - UndefinedBehaviorSanitizer for undefined behavior
+  - unit tests and smoke tests run against the sanitizer-built binary
+
 Benchmark script
   - ab fixed-count tests
   - wrk fixed-duration tests
