@@ -25,8 +25,10 @@ struct MetricsSnapshot {
     std::uint64_t upload_timeouts = 0;
     std::uint64_t object_upload_requests = 0;
     std::uint64_t streamed_upload_requests = 0;
+    std::uint64_t file_download_requests = 0;
     std::uint64_t uploaded_bytes = 0;
     std::uint64_t streamed_uploaded_bytes = 0;
+    std::uint64_t streamed_downloaded_bytes = 0;
     std::uint64_t request_bytes = 0;
     std::uint64_t response_bytes = 0;
     std::uint64_t total_latency_ms = 0;
@@ -45,6 +47,7 @@ public:
     void requestTimedOut();
     void uploadTimedOut();
     void recordObjectUpload(std::size_t body_bytes, bool streamed);
+    void recordFileDownload(std::size_t body_bytes);
     void metadataCacheHit();
     void metadataCacheMiss();
     void metadataCacheError();
@@ -74,8 +77,10 @@ private:
     std::atomic<std::uint64_t> upload_timeouts_ {0};
     std::atomic<std::uint64_t> object_upload_requests_ {0};
     std::atomic<std::uint64_t> streamed_upload_requests_ {0};
+    std::atomic<std::uint64_t> file_download_requests_ {0};
     std::atomic<std::uint64_t> uploaded_bytes_ {0};
     std::atomic<std::uint64_t> streamed_uploaded_bytes_ {0};
+    std::atomic<std::uint64_t> streamed_downloaded_bytes_ {0};
     std::atomic<std::uint64_t> request_bytes_ {0};
     std::atomic<std::uint64_t> response_bytes_ {0};
     std::atomic<std::uint64_t> total_latency_ms_ {0};

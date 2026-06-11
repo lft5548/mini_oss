@@ -585,8 +585,10 @@ def main() -> int:
         "upload_timeouts",
         "object_upload_requests",
         "streamed_upload_requests",
+        "file_download_requests",
         "uploaded_bytes",
         "streamed_uploaded_bytes",
+        "streamed_downloaded_bytes",
         "log_dropped_entries",
         "request_bytes",
         "response_bytes",
@@ -622,6 +624,12 @@ def main() -> int:
         return 1
     if upload_metrics_body["streamed_uploaded_bytes"] < len(large_body):
         print("metrics streamed uploaded bytes invalid", file=sys.stderr)
+        return 1
+    if upload_metrics_body["file_download_requests"] < 5:
+        print("metrics file download counter invalid", file=sys.stderr)
+        return 1
+    if upload_metrics_body["streamed_downloaded_bytes"] < 62:
+        print("metrics streamed downloaded bytes invalid", file=sys.stderr)
         return 1
     if "HTTP/1.1 200 OK" not in resource_guard["health"]:
         print("resource guard health check failed", file=sys.stderr)

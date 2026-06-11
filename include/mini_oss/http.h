@@ -3,12 +3,26 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace mini_oss {
+
+struct HttpFileBody {
+    HttpFileBody(int fd, std::filesystem::path path, std::uint64_t offset, std::uint64_t length);
+    ~HttpFileBody();
+
+    HttpFileBody(const HttpFileBody&) = delete;
+    HttpFileBody& operator=(const HttpFileBody&) = delete;
+
+    int fd = -1;
+    std::filesystem::path path;
+    std::uint64_t offset = 0;
+    std::uint64_t length = 0;
+};
 
 enum class HttpMethod {
     Get,
@@ -38,6 +52,9 @@ public:
                  std::vector<Header> headers = {});
 
     static HttpResponse json(int status_code, std::string status_text, std::string body);
+    static HttpResponse file(int status_code, std::string status_text, std::string content_type,
+                             int fd, std::filesystem::path path, std::uint64_t offset,
+                             std::uint64_t length, std::vector<Header> headers = {});
     static HttpResponse text(int status_code, std::string status_text, std::string body,
                              std::vector<Header> headers = {});
     static HttpResponse badRequest(const std::string& message);
@@ -48,6 +65,9 @@ public:
 
     int statusCode() const;
     std::size_t bodySize() const;
+    bool bodyInFile() const;
+    std::shared_ptr<HttpFileBody> fileBody() const;
+    std::string serializeHeaders() const;
     std::string serialize() const;
 
 private:
@@ -55,6 +75,7 @@ private:
     std::string status_text_;
     std::string content_type_;
     std::string body_;
+    std::shared_ptr<HttpFileBody> file_body_;
     std::vector<Header> headers_;
 };
 

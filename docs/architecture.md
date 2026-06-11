@@ -100,7 +100,9 @@ This design avoids keeping large request bodies in memory and gives a clear stor
 
 ### Download and Range Download
 
-`GET /objects/{id}` uses SQLite metadata to locate the physical object file. Normal download returns the full file with `Accept-Ranges: bytes`. A valid single-range request returns:
+`GET /objects/{id}` uses metadata to locate the physical object file. `ObjectStore` validates the object id, opens the file while holding the store lock, and returns a file-backed HTTP response descriptor instead of reading the full file into memory. The epoll thread then sends headers plus file bytes through `EPOLLOUT` and `sendfile`.
+
+Normal download returns the full file with `Accept-Ranges: bytes`. A valid single-range request returns:
 
 - `206 Partial Content`
 - `Content-Range: bytes start-end/total`
@@ -109,6 +111,22 @@ This design avoids keeping large request bodies in memory and gives a clear stor
 Invalid ranges return `416 Range Not Satisfiable` with `Content-Range: bytes */total`.
 
 Range support is useful because it demonstrates protocol detail, partial file reads, and object-service behavior beyond simple upload/download.
+
+The file descriptor is owned by the response object. Even if another request deletes the object metadata and unlinks the file, Linux keeps the opened file valid until the download response is released. This keeps in-flight downloads stable while still allowing normal delete semantics.
+
+Download send path:
+
+```text
+1. worker thread builds HttpResponse with opened file fd, offset, and length
+2. response is pushed to the epoll thread through eventfd
+3. epoll thread registers client fd for EPOLLOUT
+4. response headers are sent first
+5. file body is sent in bounded chunks with sendfile
+6. EAGAIN/EWOULDBLOCK pauses sending until the next writable event
+7. metrics and access logs are recorded after the response is fully sent
+```
+
+This avoids loading large downloads into memory and prevents slow clients from blocking the entire event loop.
 
 ## Threading Model
 
@@ -121,6 +139,7 @@ Main thread
   |     - timeout scan
   |     - streaming upload writes
   |     - response send
+  |     - EPOLLOUT file download streaming
   |
   +-- worker ThreadPool
   |     - route request
@@ -138,6 +157,7 @@ Important design choices:
 - The epoll loop avoids blocking business work by pushing completed requests to the worker pool.
 - The worker queue is bounded by `thread_queue_limit`; queue overflow fails fast with `503`.
 - Large uploads are streamed while reading the socket, but CPU-heavy and metadata-heavy processing still happens in worker threads after the file is complete.
+- Large downloads are represented as file-backed responses and streamed by the epoll loop using `EPOLLOUT` and `sendfile`.
 - Logging is asynchronous so request threads do not directly pay file flush latency.
 
 ## Storage Design
@@ -268,6 +288,7 @@ The logger uses a bounded queue and a background thread. Queue overflow uses dro
 - request and upload timeouts
 - object upload and streamed upload counters
 - uploaded bytes and streamed uploaded bytes
+- file download and streamed downloaded byte counters
 - metadata cache hits, misses, and errors
 - request and response bytes
 - total and average latency

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <sstream>
 #include <stdexcept>
+#include <unistd.h>
 #include <utility>
 
 namespace mini_oss {
@@ -58,6 +59,23 @@ bool parseContentLength(const std::unordered_map<std::string, std::string>& head
 
 } // namespace
 
+HttpFileBody::HttpFileBody(int fd_value, std::filesystem::path path_value,
+                           std::uint64_t offset_value, std::uint64_t length_value)
+    : fd(fd_value)
+    , path(std::move(path_value))
+    , offset(offset_value)
+    , length(length_value)
+{
+}
+
+HttpFileBody::~HttpFileBody()
+{
+    if (fd >= 0) {
+        ::close(fd);
+        fd = -1;
+    }
+}
+
 HttpResponse::HttpResponse(int status_code, std::string status_text, std::string content_type,
                            std::string body, std::vector<Header> headers)
     : status_code_(status_code)
@@ -71,6 +89,16 @@ HttpResponse::HttpResponse(int status_code, std::string status_text, std::string
 HttpResponse HttpResponse::json(int status_code, std::string status_text, std::string body)
 {
     return HttpResponse(status_code, std::move(status_text), "application/json", std::move(body));
+}
+
+HttpResponse HttpResponse::file(int status_code, std::string status_text, std::string content_type,
+                                int fd, std::filesystem::path path, std::uint64_t offset,
+                                std::uint64_t length, std::vector<Header> headers)
+{
+    HttpResponse response(status_code, std::move(status_text), std::move(content_type), "",
+                          std::move(headers));
+    response.file_body_ = std::make_shared<HttpFileBody>(fd, std::move(path), offset, length);
+    return response;
 }
 
 HttpResponse HttpResponse::text(int status_code, std::string status_text, std::string body,
@@ -114,22 +142,40 @@ int HttpResponse::statusCode() const
 
 std::size_t HttpResponse::bodySize() const
 {
-    return body_.size();
+    return bodyInFile() ? static_cast<std::size_t>(file_body_->length) : body_.size();
 }
 
-std::string HttpResponse::serialize() const
+bool HttpResponse::bodyInFile() const
+{
+    return file_body_ != nullptr;
+}
+
+std::shared_ptr<HttpFileBody> HttpResponse::fileBody() const
+{
+    return file_body_;
+}
+
+std::string HttpResponse::serializeHeaders() const
 {
     std::ostringstream oss;
     oss << "HTTP/1.1 " << status_code_ << ' ' << status_text_ << "\r\n"
         << "Content-Type: " << content_type_ << "\r\n"
-        << "Content-Length: " << body_.size() << "\r\n";
+        << "Content-Length: " << (bodyInFile() ? file_body_->length : body_.size()) << "\r\n";
     for (const auto& header : headers_) {
         oss << header.first << ": " << header.second << "\r\n";
     }
     oss << "Connection: close\r\n"
-        << "\r\n"
-        << body_;
+        << "\r\n";
     return oss.str();
+}
+
+std::string HttpResponse::serialize() const
+{
+    auto serialized = serializeHeaders();
+    if (!bodyInFile()) {
+        serialized += body_;
+    }
+    return serialized;
 }
 
 HttpMethod parseHttpMethod(const std::string& method)

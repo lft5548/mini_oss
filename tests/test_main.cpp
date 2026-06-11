@@ -255,27 +255,30 @@ void testObjectStore()
         download.path = "/objects/1";
         const auto full = store.getObject(download);
         expect(full.statusCode() == 200, "full download should succeed");
-        expect(responseBody(full) == "hello mini oss", "full download body should match");
+        expect(full.bodyInFile(), "full download should use file response");
+        expect(full.bodySize() == 14, "full download size should match");
         expectContains(full.serialize(), "Accept-Ranges: bytes", "download should advertise ranges");
+        expectContains(full.serialize(), "Content-Length: 14", "download content length should match");
 
         HttpRequest prefix_range = download;
         prefix_range.headers["range"] = "bytes=0-4";
         const auto prefix = store.getObject(prefix_range);
         expect(prefix.statusCode() == 206, "prefix range should return partial content");
-        expect(responseBody(prefix) == "hello", "prefix range body should match");
+        expect(prefix.bodyInFile(), "prefix range should use file response");
+        expect(prefix.bodySize() == 5, "prefix range size should match");
         expectContains(prefix.serialize(), "Content-Range: bytes 0-4/14", "prefix Content-Range should match");
 
         HttpRequest open_range = download;
         open_range.headers["range"] = "bytes=6-";
         const auto open = store.getObject(open_range);
         expect(open.statusCode() == 206, "open-ended range should return partial content");
-        expect(responseBody(open) == "mini oss", "open-ended range body should match");
+        expect(open.bodySize() == 8, "open-ended range size should match");
 
         HttpRequest suffix_range = download;
         suffix_range.headers["range"] = "bytes=-3";
         const auto suffix = store.getObject(suffix_range);
         expect(suffix.statusCode() == 206, "suffix range should return partial content");
-        expect(responseBody(suffix) == "oss", "suffix range body should match");
+        expect(suffix.bodySize() == 3, "suffix range size should match");
 
         HttpRequest invalid_range = download;
         invalid_range.headers["range"] = "bytes=999-1000";

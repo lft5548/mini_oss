@@ -8,11 +8,13 @@
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <fcntl.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <optional>
 #include <shared_mutex>
 #include <sstream>
+#include <unistd.h>
 #include <utility>
 
 namespace mini_oss {
@@ -78,6 +80,11 @@ std::string objectInfoJson(const ObjectInfo& info, const std::string& extra_fiel
     body
          << "}";
     return body.str();
+}
+
+int openObjectFile(const std::filesystem::path& path)
+{
+    return ::open(path.string().c_str(), O_RDONLY | O_CLOEXEC);
 }
 
 } // namespace
@@ -235,8 +242,8 @@ HttpResponse ObjectStore::getObject(const HttpRequest& request)
         return HttpResponse::notFound();
     }
 
-    std::ifstream in(info->path, std::ios::binary);
-    if (!in) {
+    const int fd = openObjectFile(info->path);
+    if (fd < 0) {
         return HttpResponse::text(500, "Internal Server Error", "cannot open object file\n");
     }
 
@@ -244,27 +251,20 @@ HttpResponse ObjectStore::getObject(const HttpRequest& request)
     if (range_header != request.headers.end()) {
         const auto range = parseRangeHeader(range_header->second, info->size);
         if (!range.has_value()) {
+            ::close(fd);
             return HttpResponse::rangeNotSatisfiable(info->size);
         }
 
         const auto length = range->end - range->start + 1;
-        std::string content(static_cast<std::size_t>(length), '\0');
-        in.seekg(static_cast<std::streamoff>(range->start), std::ios::beg);
-        in.read(content.data(), static_cast<std::streamsize>(content.size()));
-        if (in.gcount() != static_cast<std::streamsize>(content.size())) {
-            return HttpResponse::text(500, "Internal Server Error", "cannot read object range\n");
-        }
-
         std::ostringstream content_range;
         content_range << "bytes " << range->start << '-' << range->end << '/' << info->size;
-        return HttpResponse(206, "Partial Content", "application/octet-stream", std::move(content),
-                            {{"Content-Range", content_range.str()}, {"Accept-Ranges", "bytes"}});
+        return HttpResponse::file(206, "Partial Content", "application/octet-stream", fd,
+                                  info->path, range->start, length,
+                                  {{"Content-Range", content_range.str()}, {"Accept-Ranges", "bytes"}});
     }
 
-    std::ostringstream content;
-    content << in.rdbuf();
-    return HttpResponse(200, "OK", "application/octet-stream", content.str(),
-                        {{"Accept-Ranges", "bytes"}});
+    return HttpResponse::file(200, "OK", "application/octet-stream", fd, info->path, 0, info->size,
+                              {{"Accept-Ranges", "bytes"}});
 }
 
 HttpResponse ObjectStore::deleteObject(const HttpRequest& request)

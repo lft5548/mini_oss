@@ -102,6 +102,7 @@ The current MVP supports:
 - repeatable benchmark report generated with ab and wrk
 - configurable upload size limits and stream-upload threshold
 - large `POST /objects` request bodies streamed to `storage/tmp_uploads` before metadata processing
+- large object downloads are sent through EPOLLOUT + sendfile instead of loading the full file into memory
 - resource guards for max connections, worker queue length, slow request timeout, and slow upload timeout
 - SQLite metadata persistence under `storage/metadata.db`
 - optional Redis metadata cache for object lookup and SHA-256 dedup index lookup
@@ -208,6 +209,12 @@ The related resource controls are:
 - `max_upload_bytes`: maximum accepted object upload size.
 - `stream_upload_threshold_bytes`: threshold for switching `POST /objects` to the file-backed upload path.
 
+## Streaming Downloads
+
+`GET /objects/{id}` and Range downloads use file-backed responses. `ObjectStore` opens the object file and returns a response descriptor containing the file descriptor, offset, and length. The epoll thread then sends headers and streams the file body with `EPOLLOUT` and `sendfile`.
+
+This avoids loading large files into memory and keeps slow clients from blocking the event loop. The response owns the opened file descriptor, so an in-flight download can finish even if another request deletes the object's metadata and unlinks the file.
+
 ## Resource Guards
 
 Mini-OSS exposes defensive limits that are common in backend services:
@@ -229,7 +236,7 @@ curl -i -X POST http://127.0.0.1:8080/objects \
 
 ## Metrics
 
-`GET /metrics` returns runtime service counters in JSON format, including active/peak/total connections, rejected connections, total requests, success/failure counts, HTTP status-class distribution, worker-queue rejections, request/upload timeouts, object upload counters, Redis metadata cache hit/miss/error counters, async log dropped entries, request/response bytes, total latency, and average latency.
+`GET /metrics` returns runtime service counters in JSON format, including active/peak/total connections, rejected connections, total requests, success/failure counts, HTTP status-class distribution, worker-queue rejections, request/upload timeouts, object upload/download counters, streamed upload/download bytes, Redis metadata cache hit/miss/error counters, async log dropped entries, request/response bytes, total latency, and average latency.
 
 ```bash
 curl -i http://127.0.0.1:8080/metrics

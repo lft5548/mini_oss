@@ -53,6 +53,13 @@ void Metrics::recordObjectUpload(std::size_t body_bytes, bool streamed)
     }
 }
 
+void Metrics::recordFileDownload(std::size_t body_bytes)
+{
+    file_download_requests_.fetch_add(1, std::memory_order_relaxed);
+    streamed_downloaded_bytes_.fetch_add(static_cast<std::uint64_t>(body_bytes),
+                                         std::memory_order_relaxed);
+}
+
 void Metrics::metadataCacheHit()
 {
     metadata_cache_hits_.fetch_add(1, std::memory_order_relaxed);
@@ -115,8 +122,10 @@ MetricsSnapshot Metrics::snapshot() const
     snapshot.upload_timeouts = upload_timeouts_.load(std::memory_order_relaxed);
     snapshot.object_upload_requests = object_upload_requests_.load(std::memory_order_relaxed);
     snapshot.streamed_upload_requests = streamed_upload_requests_.load(std::memory_order_relaxed);
+    snapshot.file_download_requests = file_download_requests_.load(std::memory_order_relaxed);
     snapshot.uploaded_bytes = uploaded_bytes_.load(std::memory_order_relaxed);
     snapshot.streamed_uploaded_bytes = streamed_uploaded_bytes_.load(std::memory_order_relaxed);
+    snapshot.streamed_downloaded_bytes = streamed_downloaded_bytes_.load(std::memory_order_relaxed);
     snapshot.request_bytes = request_bytes_.load(std::memory_order_relaxed);
     snapshot.response_bytes = response_bytes_.load(std::memory_order_relaxed);
     snapshot.total_latency_ms = total_latency_ms_.load(std::memory_order_relaxed);
@@ -153,8 +162,10 @@ std::string Metrics::toJson() const
         << "\"upload_timeouts\":" << data.upload_timeouts << ","
         << "\"object_upload_requests\":" << data.object_upload_requests << ","
         << "\"streamed_upload_requests\":" << data.streamed_upload_requests << ","
+        << "\"file_download_requests\":" << data.file_download_requests << ","
         << "\"uploaded_bytes\":" << data.uploaded_bytes << ","
         << "\"streamed_uploaded_bytes\":" << data.streamed_uploaded_bytes << ","
+        << "\"streamed_downloaded_bytes\":" << data.streamed_downloaded_bytes << ","
         << "\"request_bytes\":" << data.request_bytes << ","
         << "\"response_bytes\":" << data.response_bytes << ","
         << "\"total_latency_ms\":" << data.total_latency_ms << ","

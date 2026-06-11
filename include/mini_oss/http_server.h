@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -52,6 +53,7 @@ private:
         bool processing = false;
         bool header_parsed = false;
         bool streaming_upload = false;
+        bool writing_response = false;
         std::uint64_t content_length = 0;
         std::uint64_t received_body_bytes = 0;
         std::size_t request_bytes = 0;
@@ -59,19 +61,42 @@ private:
         std::filesystem::path temp_upload_path;
         int temp_upload_fd = -1;
         bool owns_temp_upload = false;
+        std::string response_buffer;
+        std::size_t response_buffer_sent = 0;
+        std::shared_ptr<HttpFileBody> response_file;
+        std::uint64_t response_file_offset = 0;
+        std::uint64_t response_file_remaining = 0;
+        std::size_t response_total_bytes = 0;
+        int response_status_code = 0;
+        std::string response_method;
+        std::string response_path;
+        std::string response_remote_addr;
+        std::size_t response_request_bytes = 0;
+        std::chrono::steady_clock::time_point response_started_at;
     };
 
     struct PendingResponse {
         int client_fd = -1;
         std::uint64_t generation = 0;
-        std::string response;
+        HttpResponse response;
+        std::string remote_addr;
+        std::string method;
+        std::string path;
+        std::chrono::steady_clock::time_point started_at;
+        std::size_t request_bytes = 0;
     };
 
     void submitRequest(int client_fd, std::uint64_t generation, std::string remote_addr,
                        std::chrono::steady_clock::time_point started_at, HttpRequest request,
                        std::size_t request_bytes);
-    void enqueueResponse(int client_fd, std::uint64_t generation, std::string response);
+    void enqueueResponse(int client_fd, std::uint64_t generation, HttpResponse response,
+                         std::string remote_addr, std::string method, std::string path,
+                         std::chrono::steady_clock::time_point started_at,
+                         std::size_t request_bytes);
     void sendCompletedResponses();
+    void beginResponse(PendingResponse response);
+    void handleClientWrite(int client_fd);
+    void finishResponse(int client_fd);
     void closeClient(int client_fd);
     void closeTimedOutClients();
     void logServerError(const std::string& message);

@@ -55,6 +55,7 @@ Current MVP status:
 - Benchmark script and ab/wrk report: done.
 - CTest unit tests and GitHub Actions CI workflow: done.
 - Large upload streaming with temporary files and incremental SHA-256: done.
+- EPOLLOUT + sendfile based file download streaming: done.
 - Resource guards for connection count, worker queue length, request timeout, and upload timeout: done.
 - Dockerfile, docker compose, startup scripts, and deployment docs: done.
 - Redis metadata cache with SQLite fallback and cache metrics: done.
@@ -66,7 +67,7 @@ Known limitations before the next phase:
 - Token auth is static shared-token auth; later versions can add users, roles, or signed URLs.
 - Deduplication is single-node metadata deduplication; later versions can add content-addressed storage layout and garbage collection jobs.
 - No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.
-- Large response sending still happens in the event loop; later versions can add EPOLLOUT output buffers.
+- Response sending uses EPOLLOUT for file bodies; small in-memory responses are still buffered before send.
 - Redis cache is single-node cache-aside; TTL bounds stale keys after failed invalidation.
 
 ## Advanced Scope

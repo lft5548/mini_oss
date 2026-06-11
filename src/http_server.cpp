@@ -18,6 +18,7 @@
 #include <sstream>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <utility>
@@ -36,6 +37,7 @@ constexpr std::size_t kDefaultMaxRequestSize = 10 * 1024 * 1024;
 constexpr std::size_t kDefaultMaxUploadSize = 128 * 1024 * 1024;
 constexpr std::size_t kDefaultStreamUploadThreshold = 1024 * 1024;
 constexpr std::size_t kDefaultMaxConnections = 1024;
+constexpr std::size_t kFileSendChunk = 256 * 1024;
 
 std::string socketError(const char* operation)
 {
@@ -237,6 +239,11 @@ void HttpServer::run(const std::function<bool()>& keep_running)
 
             if (fd == wake_fd_) {
                 handleWakeup();
+                continue;
+            }
+
+            if ((event_mask & EPOLLOUT) != 0) {
+                handleClientWrite(fd);
                 continue;
             }
 
@@ -576,29 +583,30 @@ void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::str
         }
         cleanupTemporaryRequestBody(request);
 
-        const auto serialized = http_response.serialize();
-        const auto duration_ms = elapsedMs(started_at);
-        logAccess(remote_addr, method, path, http_response.statusCode(), request_bytes,
-                  serialized.size(), duration_ms);
-        enqueueResponse(client_fd, generation, std::move(serialized));
+        enqueueResponse(client_fd, generation, std::move(http_response), remote_addr, method, path,
+                        started_at, request_bytes);
     });
 
     if (!queued) {
         metrics_.queueRejected();
         cleanupTemporaryRequestBody(request);
-        const auto response = HttpResponse::text(503, "Service Unavailable", "server busy\n");
-        const auto serialized = response.serialize();
-        logAccess(remote_addr, httpMethodName(request.method), request.path, response.statusCode(),
-                  request_bytes, serialized.size(), elapsedMs(started_at));
-        enqueueResponse(client_fd, generation, serialized);
+        enqueueResponse(client_fd, generation,
+                        HttpResponse::text(503, "Service Unavailable", "server busy\n"),
+                        remote_addr, httpMethodName(request.method), request.path, started_at,
+                        request_bytes);
     }
 }
 
-void HttpServer::enqueueResponse(int client_fd, std::uint64_t generation, std::string response)
+void HttpServer::enqueueResponse(int client_fd, std::uint64_t generation, HttpResponse response,
+                                 std::string remote_addr, std::string method, std::string path,
+                                 std::chrono::steady_clock::time_point started_at,
+                                 std::size_t request_bytes)
 {
     {
         std::lock_guard<std::mutex> lock(responses_mutex_);
-        responses_.push(PendingResponse {client_fd, generation, std::move(response)});
+        responses_.push(PendingResponse {client_fd, generation, std::move(response),
+                                         std::move(remote_addr), std::move(method),
+                                         std::move(path), started_at, request_bytes});
     }
 
     if (wake_fd_ >= 0) {
@@ -625,9 +633,122 @@ void HttpServer::sendCompletedResponses()
             continue;
         }
 
-        sendAll(response.client_fd, response.response);
-        closeClient(response.client_fd);
+        beginResponse(std::move(response));
     }
+}
+
+void HttpServer::beginResponse(PendingResponse response)
+{
+    const auto client_it = clients_.find(response.client_fd);
+    if (client_it == clients_.end() || client_it->second.generation != response.generation) {
+        return;
+    }
+
+    auto& state = client_it->second;
+    state.response_buffer = response.response.bodyInFile()
+        ? response.response.serializeHeaders()
+        : response.response.serialize();
+    state.response_buffer_sent = 0;
+    state.response_file = response.response.fileBody();
+    state.response_file_offset = state.response_file == nullptr ? 0 : state.response_file->offset;
+    state.response_file_remaining = state.response_file == nullptr ? 0 : state.response_file->length;
+    state.response_total_bytes = state.response_buffer.size()
+        + static_cast<std::size_t>(state.response_file_remaining);
+    state.response_status_code = response.response.statusCode();
+    state.response_method = std::move(response.method);
+    state.response_path = std::move(response.path);
+    state.response_remote_addr = std::move(response.remote_addr);
+    state.response_request_bytes = response.request_bytes;
+    state.response_started_at = response.started_at;
+    state.processing = false;
+    state.writing_response = true;
+    state.last_activity_at = std::chrono::steady_clock::now();
+
+    epoll_event event {};
+    event.events = EPOLLOUT | EPOLLRDHUP;
+    event.data.fd = response.client_fd;
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, response.client_fd, &event) < 0) {
+        logServerError(socketError("epoll_ctl enable write"));
+        closeClient(response.client_fd);
+        return;
+    }
+
+    handleClientWrite(response.client_fd);
+}
+
+void HttpServer::handleClientWrite(int client_fd)
+{
+    const auto client_it = clients_.find(client_fd);
+    if (client_it == clients_.end() || !client_it->second.writing_response) {
+        return;
+    }
+
+    auto& state = client_it->second;
+    while (state.response_buffer_sent < state.response_buffer.size()) {
+        const auto* data = state.response_buffer.data() + state.response_buffer_sent;
+        const auto remaining = state.response_buffer.size() - state.response_buffer_sent;
+        const ssize_t n = ::send(client_fd, data, remaining, MSG_NOSIGNAL);
+        if (n > 0) {
+            state.response_buffer_sent += static_cast<std::size_t>(n);
+            state.last_activity_at = std::chrono::steady_clock::now();
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return;
+        }
+        closeClient(client_fd);
+        return;
+    }
+
+    while (state.response_file != nullptr && state.response_file_remaining > 0) {
+        off_t offset = static_cast<off_t>(state.response_file_offset);
+        const auto chunk = static_cast<std::size_t>(
+            std::min<std::uint64_t>(state.response_file_remaining, kFileSendChunk));
+        const ssize_t n = ::sendfile(client_fd, state.response_file->fd, &offset, chunk);
+        if (n > 0) {
+            state.response_file_offset = static_cast<std::uint64_t>(offset);
+            state.response_file_remaining -= static_cast<std::uint64_t>(n);
+            state.last_activity_at = std::chrono::steady_clock::now();
+            continue;
+        }
+        if (n == 0) {
+            closeClient(client_fd);
+            return;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return;
+        }
+        closeClient(client_fd);
+        return;
+    }
+
+    finishResponse(client_fd);
+}
+
+void HttpServer::finishResponse(int client_fd)
+{
+    const auto client_it = clients_.find(client_fd);
+    if (client_it == clients_.end()) {
+        return;
+    }
+
+    auto& state = client_it->second;
+    if (state.response_file != nullptr) {
+        const auto file_length = state.response_file->length;
+        if (file_length <= static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+            metrics_.recordFileDownload(static_cast<std::size_t>(file_length));
+        }
+    }
+    logAccess(state.response_remote_addr, state.response_method, state.response_path,
+              state.response_status_code, state.response_request_bytes,
+              state.response_total_bytes, elapsedMs(state.response_started_at));
+    closeClient(client_fd);
 }
 
 void HttpServer::closeClient(int client_fd)
@@ -679,6 +800,11 @@ void HttpServer::closeTimedOutClients()
             continue;
         }
         const auto& state = client_it->second;
+        if (state.writing_response) {
+            metrics_.requestTimedOut();
+            closeClient(client_fd);
+            continue;
+        }
         if (state.streaming_upload) {
             metrics_.uploadTimedOut();
         } else {
