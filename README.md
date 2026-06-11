@@ -27,6 +27,7 @@ HTTP APIs, object metadata, file integrity verification, logging, monitoring, an
 - [Architecture](docs/architecture.md): system design, request lifecycle, threading model, storage design, resource guards, observability, testing, and interview explanation outline.
 - [Requirements](docs/requirements.md): project scope, current status, limitations, and advanced roadmap.
 - [Benchmark Report](docs/benchmark.md): repeatable ab/wrk benchmark commands, results, raw output, and metrics snapshot.
+- [Deployment](docs/deployment.md): local scripts, Docker image, docker compose, runtime paths, and operational checks.
 
 ## Roadmap
 
@@ -49,6 +50,20 @@ cmake --build build
 ```bash
 cp config.example.ini config.ini
 ./build/mini_oss --config config.ini
+```
+
+Local script deployment:
+
+```bash
+./scripts/start.sh
+./scripts/status.sh
+./scripts/stop.sh
+```
+
+Docker deployment:
+
+```bash
+docker compose up --build
 ```
 
 Command-line options override the config file:
@@ -125,6 +140,7 @@ Expected checks:
 - `access.log`, `error.log`, and `slow.log` are generated
 - `/metrics` exposes runtime counters for connections, status classes, resource rejections, timeouts, upload traffic, bytes, and latency
 - CTest unit tests and a GitHub Actions workflow provide build, unit-test, and smoke-test quality gates
+- Dockerfile, docker compose, and local start/stop/status scripts provide repeatable deployment paths
 - object APIs return `401 Unauthorized` when auth token is configured and missing
 
 ## Benchmark

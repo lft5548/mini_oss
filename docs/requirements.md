@@ -56,6 +56,7 @@ Current MVP status:
 - CTest unit tests and GitHub Actions CI workflow: done.
 - Large upload streaming with temporary files and incremental SHA-256: done.
 - Resource guards for connection count, worker queue length, request timeout, and upload timeout: done.
+- Dockerfile, docker compose, startup scripts, and deployment docs: done.
 
 Known limitations before the next phase:
 
@@ -66,7 +67,6 @@ Known limitations before the next phase:
 - No SQLite connection pool yet; current version uses a single SQLite connection protected by a mutex.
 - Large response sending still happens in the event loop; later versions can add EPOLLOUT output buffers.
 - No Redis cache yet; later versions can cache object metadata and SHA-256 dedup indexes with SQLite fallback.
-- No Docker deployment artifact yet; later versions can add Dockerfile, docker-compose, startup scripts, and deployment docs.
 
 ## Advanced Scope
 

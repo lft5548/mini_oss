@@ -8,7 +8,7 @@ Mini-OSS is a single-node Linux C++ object storage service. The project is inten
 - Support common object-storage workflows: upload, list, download, Range download, delete, deduplication, and instant upload.
 - Keep the service stable under imperfect clients through connection limits, bounded queues, request timeouts, upload timeouts, and temporary-file cleanup.
 - Make runtime behavior explainable through access logs, slow logs, error logs, `/metrics`, smoke tests, unit tests, and benchmark reports.
-- Keep the current version single-node and understandable, while leaving clear extension points for Redis cache, Docker deployment, and future distributed storage features.
+- Keep the current version single-node and understandable, while providing reproducible deployment artifacts and leaving clear extension points for Redis cache, EPOLLOUT response buffers, and future distributed storage features.
 
 ## High-Level Architecture
 
@@ -331,20 +331,14 @@ When connection count or worker queue limits are reached, returning `503` is cle
 
 Recommended next phases:
 
-1. **Docker deployment**
-   - `Dockerfile`
-   - `docker-compose.yml`
-   - startup scripts
-   - deploy/run documentation
-
-2. **Redis metadata cache**
+1. **Redis metadata cache**
    - cache `object:meta:{id}`
    - cache `object:sha:{sha256}:{size}`
    - fallback to SQLite when Redis is unavailable
    - invalidation on delete
    - metrics: hits, misses, errors
 
-3. **Network output buffer**
+2. **Network output buffer**
    - EPOLLOUT-driven response writing
    - avoid blocking the event loop during large response send
 
@@ -360,4 +354,4 @@ When explaining the project, use this order:
 6. Resource guards protect connection count, worker backlog, request timeout, upload timeout, and log queue size.
 7. Observability includes async logs, `/metrics`, slow logs, benchmark reports, and test results.
 8. Engineering quality is shown through CTest, smoke tests, GitHub Actions, and ab/wrk benchmarks.
-9. Future extensions are Docker deployment, Redis metadata cache, and EPOLLOUT output buffers.
+9. Current deployment is covered by local scripts and Docker artifacts; future extensions are Redis metadata cache and EPOLLOUT output buffers.

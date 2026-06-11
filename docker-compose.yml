@@ -1,0 +1,23 @@
+services:
+  mini-oss:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mini-oss:latest
+    container_name: mini-oss
+    ports:
+      - "8080:8080"
+    volumes:
+      - mini_oss_storage:/data/storage
+      - mini_oss_logs:/data/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  mini_oss_storage:
+  mini_oss_logs:
