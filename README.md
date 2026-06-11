@@ -160,14 +160,15 @@ Expected checks:
 
 ## Benchmark
 
-Mini-OSS includes a repeatable benchmark driver based on ApacheBench and wrk. The script starts a local server, uploads a seed object, runs read/write benchmark cases, fetches `/metrics`, and writes a Markdown report.
+Mini-OSS includes a repeatable benchmark driver based on ApacheBench and wrk. The script starts a local server, uploads small and large seed objects, runs read/write benchmark cases, probes Redis cache hit/miss behavior when enabled, fetches `/metrics`, and writes a Markdown report.
 
 ```bash
 cmake --build build
-./scripts/benchmark_http.py
+redis-cli ping  # start redis-server first if this is not PONG
+./scripts/benchmark_http.py --redis-enabled
 ```
 
-The generated report is written to `docs/benchmark.md` and includes QPS, mean latency, percentile latency, failure count, transfer rate, raw ab/wrk output, and a metrics snapshot.
+The generated report is written to `docs/benchmark.md` and includes QPS, mean latency, percentile latency, failure count, transfer rate, Redis cache probe results, raw ab/wrk output, and a metrics snapshot. The default scenarios cover `/health`, small object download, large EPOLLOUT + sendfile download, Range download, instant upload, and streamed upload.
 
 ## Authentication
 

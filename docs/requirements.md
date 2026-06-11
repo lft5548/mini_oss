@@ -52,7 +52,7 @@ Current MVP status:
 - `/metrics` runtime monitoring endpoint: done.
 - Resource and status-class metrics: done.
 - Token authentication for object APIs: done.
-- Benchmark script and ab/wrk report: done.
+- Benchmark script and ab/wrk report covering Redis cache and EPOLLOUT/sendfile paths: done.
 - CTest unit tests and GitHub Actions CI workflow: done.
 - Large upload streaming with temporary files and incremental SHA-256: done.
 - EPOLLOUT + sendfile based file download streaming: done.

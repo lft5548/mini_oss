@@ -326,6 +326,8 @@ Sanitizer CI
 Benchmark script
   - ab fixed-count tests
   - wrk fixed-duration tests
+  - Redis hit/miss probe
+  - EPOLLOUT + sendfile download path coverage
   - generated docs/benchmark.md
 ```
 
@@ -336,10 +338,12 @@ The unit-test stage found and fixed a real route-boundary bug: `/objects/` shoul
 `scripts/benchmark_http.py` starts a local server and runs:
 
 - `GET /health`
-- `GET /objects/{id}`
+- small-object `GET /objects/{id}`
+- large-object `GET /objects/{id}` through the EPOLLOUT + sendfile file response path
 - `GET /objects/{id}` with Range
 - `POST /objects/instant`
 - `POST /objects`
+- optional Redis cache probe: delete one object metadata key, verify miss + SQLite fallback + refill, then verify Redis hit
 
 The generated report records:
 
@@ -376,10 +380,14 @@ Synchronous log writes add IO latency to the request path. Async logging decoupl
 
 When connection count or worker queue limits are reached, returning `503` is clearer than letting latency grow without bound. This makes overload behavior predictable and measurable.
 
+### Why refresh benchmarks after Redis and sendfile?
+
+Redis and EPOLLOUT + sendfile are performance-oriented changes, so they need evidence, not only code. The refreshed benchmark separates baseline health checks, object read/write paths, and cache/streaming paths. That lets the project explain what each optimization affects and uses `/metrics` to verify cache hits, cache misses, download bytes, and failure counts.
+
 ## Current Limitations
 
 - One request per connection; keep-alive and pipelining are not implemented.
-- Large response sending still happens synchronously after worker completion; EPOLLOUT output buffers can improve this.
+- Small in-memory responses are still buffered before send; file-backed object downloads use EPOLLOUT + sendfile.
 - SQLite uses one mutex-protected connection; a connection pool or external metadata database can improve concurrency.
 - Token auth is static shared-token auth; users, roles, signed URLs, or JWT can be added later.
 - Metrics are in-process counters and reset on restart.
@@ -389,16 +397,14 @@ When connection count or worker queue limits are reached, returning `503` is cle
 
 Recommended next phases:
 
-1. **Redis metadata cache**
-   - cache `object:meta:{id}`
-   - cache `object:sha:{sha256}:{size}`
-   - fallback to SQLite when Redis is unavailable
-   - invalidation on delete
-   - metrics: hits, misses, errors
+1. **Benchmark refresh**
+   - keep ab/wrk reports aligned with Redis metadata cache and EPOLLOUT + sendfile download
+   - compare small object, large object, Range, upload, instant upload, and cache hit/miss paths
+   - use `/metrics` counters to explain performance and failure behavior
 
-2. **Network output buffer**
-   - EPOLLOUT-driven response writing
-   - avoid blocking the event loop during large response send
+2. **Interview guide**
+   - turn the architecture, tradeoffs, bottlenecks, and verification results into a concise interview narrative
+   - prepare answers for epoll, thread pool, SQLite, Redis cache-aside, large upload streaming, sendfile, overload protection, CI, and sanitizer checks
 
 ## Interview Explanation Outline
 
@@ -412,4 +418,4 @@ When explaining the project, use this order:
 6. Resource guards protect connection count, worker backlog, request timeout, upload timeout, and log queue size.
 7. Observability includes async logs, `/metrics`, slow logs, benchmark reports, and test results.
 8. Engineering quality is shown through CTest, smoke tests, GitHub Actions, and ab/wrk benchmarks.
-9. Current deployment is covered by local scripts and Docker artifacts; future extensions are Redis metadata cache and EPOLLOUT output buffers.
+9. Deployment is covered by local scripts and Docker artifacts; Redis metadata cache and EPOLLOUT + sendfile downloads are implemented, with future room for keep-alive, signed URLs, chunked upload, and distributed storage.

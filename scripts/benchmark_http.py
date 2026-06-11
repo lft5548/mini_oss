@@ -35,6 +35,19 @@ class BenchmarkResult:
     notes: str
 
 
+@dataclass
+class CacheProbe:
+    enabled: bool
+    object_id: str = ""
+    redis_key: str = ""
+    first_get_status: int = 0
+    second_get_status: int = 0
+    hit_delta: int = 0
+    miss_delta: int = 0
+    error_delta: int = 0
+    notes: str = ""
+
+
 def build_request(
     path: str,
     method: str = "GET",
@@ -91,6 +104,11 @@ def write_config(
     request_timeout_ms: int,
     upload_timeout_ms: int,
     log_queue_limit: int,
+    redis_enabled: bool,
+    redis_host: str,
+    redis_port: int,
+    redis_key_prefix: str,
+    redis_ttl_seconds: int,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -104,7 +122,13 @@ def write_config(
         f"upload_timeout_ms = {upload_timeout_ms}\n\n"
         "[storage]\ndir = tmp/benchmark_storage\n\n"
         f"[logging]\ndir = tmp/benchmark_logs\nqueue_limit = {log_queue_limit}\n\n"
-        f"[auth]\ntoken = {AUTH_TOKEN}\n",
+        f"[auth]\ntoken = {AUTH_TOKEN}\n\n"
+        "[redis]\n"
+        f"enabled = {'true' if redis_enabled else 'false'}\n"
+        f"host = {redis_host}\n"
+        f"port = {redis_port}\n"
+        f"key_prefix = {redis_key_prefix}\n"
+        f"ttl_seconds = {redis_ttl_seconds}\n",
         encoding="utf-8",
     )
 
@@ -146,13 +170,19 @@ def stop_server(proc: subprocess.Popen[str]) -> tuple[str, str]:
         return proc.communicate(timeout=3)
 
 
-def upload_seed_object(port: int, size: int) -> dict:
-    body = (b"mini-oss-benchmark-" * ((size // 19) + 1))[:size]
+def make_body(marker: bytes, size: int) -> bytes:
+    if size <= 0:
+        return b""
+    return (marker * ((size // len(marker)) + 1))[:size]
+
+
+def upload_seed_object(port: int, size: int, filename: str, marker: bytes) -> dict:
+    body = make_body(marker, size)
     status, response_body = http_request(
         port,
         "/objects",
         method="POST",
-        headers={"Authorization": f"Bearer {AUTH_TOKEN}", "X-Filename": "benchmark-seed.bin"},
+        headers={"Authorization": f"Bearer {AUTH_TOKEN}", "X-Filename": filename},
         body=body,
     )
     if status != 201:
@@ -165,6 +195,58 @@ def fetch_metrics(port: int) -> dict:
     if status != 200:
         return {}
     return json.loads(body.decode("utf-8"))
+
+
+def redis_cli(args: argparse.Namespace, *redis_args: str, raw: bool = False) -> str:
+    command = ["redis-cli"]
+    if raw:
+        command.append("--raw")
+    command.extend(["-h", args.redis_host, "-p", str(args.redis_port), *redis_args])
+    completed = subprocess.run(command, check=False, text=True, capture_output=True)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"redis-cli failed\ncommand: {command_text(command)}\n{completed.stdout}{completed.stderr}"
+        )
+    return completed.stdout.strip()
+
+
+def clear_redis_prefix(args: argparse.Namespace) -> None:
+    if not args.redis_enabled:
+        return
+    keys = redis_cli(args, "KEYS", f"{args.redis_key_prefix}:*", raw=True).splitlines()
+    if keys:
+        redis_cli(args, "DEL", *keys)
+
+
+def run_cache_probe(args: argparse.Namespace, object_id: str) -> CacheProbe:
+    if not args.redis_enabled:
+        return CacheProbe(enabled=False, notes="Redis benchmark disabled")
+
+    redis_key = f"{args.redis_key_prefix}:object:{object_id}"
+    before = fetch_metrics(args.port)
+    redis_cli(args, "DEL", redis_key)
+    first_status, _ = http_request(
+        args.port,
+        f"/objects/{object_id}",
+        headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+    )
+    second_status, _ = http_request(
+        args.port,
+        f"/objects/{object_id}",
+        headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+    )
+    after = fetch_metrics(args.port)
+    return CacheProbe(
+        enabled=True,
+        object_id=object_id,
+        redis_key=redis_key,
+        first_get_status=first_status,
+        second_get_status=second_status,
+        hit_delta=after.get("metadata_cache_hits", 0) - before.get("metadata_cache_hits", 0),
+        miss_delta=after.get("metadata_cache_misses", 0) - before.get("metadata_cache_misses", 0),
+        error_delta=after.get("metadata_cache_errors", 0) - before.get("metadata_cache_errors", 0),
+        notes="deleted one object metadata key; first GET should miss SQLite fallback and refill cache, second GET should hit Redis",
+    )
 
 
 def parse_int(pattern: str, text: str) -> int:
@@ -361,7 +443,9 @@ def render_report(
     args: argparse.Namespace,
     ab_version: str,
     wrk_version: str,
-    seed: dict,
+    small_seed: dict,
+    large_seed: dict,
+    cache_probe: CacheProbe,
     results: list[BenchmarkResult],
     metrics: dict,
     server_stdout: str,
@@ -388,7 +472,11 @@ def render_report(
         f"- wrk threads/connections/duration/timeout: {args.wrk_threads}/{args.wrk_connections}/{args.wrk_duration}/{args.wrk_timeout}",
         f"- wrk full-download threads/connections/duration/timeout: {min(args.wrk_threads, 1)}/{min(args.wrk_connections, 4)}/{args.wrk_duration}/{args.wrk_timeout}",
         f"- wrk Range threads/connections/duration/timeout: {min(args.wrk_threads, 1)}/{min(args.wrk_connections, 4)}/{args.wrk_duration}/{args.wrk_timeout}",
-        f"- Seed object size: {args.object_size} bytes",
+        f"- Redis metadata cache: {'enabled' if args.redis_enabled else 'disabled'}",
+        f"- Redis host/port/key prefix: {args.redis_host}/{args.redis_port}/{args.redis_key_prefix}",
+        f"- Small seed object size: {args.small_object_size} bytes",
+        f"- Large seed object size: {args.large_object_size} bytes",
+        f"- Upload benchmark object size: {args.upload_object_size} bytes",
         f"- Max request bytes: {args.max_request_bytes}",
         f"- Max upload bytes: {args.max_upload_bytes}",
         f"- Stream upload threshold bytes: {args.stream_upload_threshold_bytes}",
@@ -413,10 +501,24 @@ def render_report(
     lines.extend(
         [
             "",
-            "## Seed Object",
+            "## Seed Objects",
+            "",
+            "Small object:",
             "",
             "```json",
-            json.dumps(seed, indent=2),
+            json.dumps(small_seed, indent=2),
+            "```",
+            "",
+            "Large object:",
+            "",
+            "```json",
+            json.dumps(large_seed, indent=2),
+            "```",
+            "",
+            "## Redis Cache Probe",
+            "",
+            "```json",
+            json.dumps(cache_probe.__dict__, indent=2),
             "```",
             "",
             "## Server Metrics Snapshot",
@@ -446,10 +548,13 @@ def render_report(
             "## Interpretation",
             "",
             "- `GET /health` reflects the networking, epoll, HTTP parsing, routing, and worker dispatch baseline.",
-            "- `GET /objects/{id}` includes metadata lookup and object file read path.",
+            "- Small-object `GET /objects/{id}` focuses on metadata lookup, Redis cache behavior, and low payload overhead.",
+            "- Large-object `GET /objects/{id}` exercises file-backed responses sent by the epoll loop through `EPOLLOUT` and `sendfile`, without loading the full object into memory.",
+            "- Range download validates partial file reads and `206 Partial Content` behavior for resumable/download-accelerated clients.",
             "- `POST /objects/instant` validates SHA-256 lookup and SQLite metadata insertion without sending file content.",
             "- `POST /objects` sends an object body; repeated same-body requests also exercise the deduplication path.",
-            "- When `object_size` is larger than `stream_upload_threshold_bytes`, upload cases also exercise the temporary-file streaming path.",
+            "- When `upload_object_size` is larger than `stream_upload_threshold_bytes`, upload cases also exercise the temporary-file streaming path.",
+            "- The Redis cache probe deletes one object metadata key, then verifies a miss/refill followed by a hit using `/metrics` counters.",
             "- Resource guards are enabled during benchmark startup, so the report records the tested admission-control and timeout configuration.",
             "- `ab` provides fixed request-count results; `wrk` provides fixed-duration latency distribution and throughput.",
             "",
@@ -458,8 +563,8 @@ def render_report(
             "- This is a local WSL loopback benchmark; use it for regression comparison, not production capacity claims.",
             "- `ab` and `wrk` use different client models, so numbers should be compared within the same tool.",
             "- Repeated upload benchmarking uses the same body for each request, so deduplication affects write-path results.",
-            "- Large full-object downloads use a lower wrk connection count because the current server sends responses synchronously after worker completion.",
-            "- Later stages can add EPOLLOUT output buffers, longer duration tests, mixed traffic Lua scripts, flamegraphs, and memory profiling.",
+            "- Large full-object downloads use a lower wrk connection count to keep local WSL loopback measurements stable and readable.",
+            "- Later stages can add keep-alive, mixed traffic Lua scripts, flamegraphs, heap profiling, and longer duration regression runs.",
             "",
             "## Raw Output",
             "",
@@ -506,7 +611,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wrk-connections", type=int, default=12)
     parser.add_argument("--wrk-duration", default="3s")
     parser.add_argument("--wrk-timeout", default="10s")
-    parser.add_argument("--object-size", type=int, default=65536)
+    parser.add_argument("--small-object-size", type=int, default=4096)
+    parser.add_argument("--large-object-size", "--object-size", dest="large_object_size", type=int, default=1024 * 1024)
+    parser.add_argument("--upload-object-size", type=int, default=65536)
+    parser.add_argument("--redis-enabled", action="store_true")
+    parser.add_argument("--redis-host", default="127.0.0.1")
+    parser.add_argument("--redis-port", type=int, default=6379)
+    parser.add_argument("--redis-key-prefix", default="mini_oss_benchmark")
+    parser.add_argument("--redis-ttl-seconds", type=int, default=300)
     parser.add_argument("--max-request-bytes", type=int, default=4096)
     parser.add_argument("--max-upload-bytes", type=int, default=2 * 1024 * 1024)
     parser.add_argument("--stream-upload-threshold-bytes", type=int, default=1024)
@@ -530,6 +642,17 @@ def main() -> int:
     if not Path("./build/mini_oss").exists():
         print("build/mini_oss not found; run cmake --build build first", file=sys.stderr)
         return 1
+    if args.redis_enabled:
+        if shutil.which("redis-cli") is None:
+            print("redis-cli not found; install redis-tools first", file=sys.stderr)
+            return 1
+        try:
+            if redis_cli(args, "PING") != "PONG":
+                print("redis server did not return PONG", file=sys.stderr)
+                return 1
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
 
     storage_dir = Path("tmp/benchmark_storage")
     log_dir = Path("tmp/benchmark_logs")
@@ -539,10 +662,11 @@ def main() -> int:
     shutil.rmtree(storage_dir, ignore_errors=True)
     shutil.rmtree(log_dir, ignore_errors=True)
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    if args.object_size > args.max_upload_bytes:
-        print("object size must not exceed max upload bytes", file=sys.stderr)
+    if max(args.small_object_size, args.large_object_size, args.upload_object_size) > args.max_upload_bytes:
+        print("object sizes must not exceed max upload bytes", file=sys.stderr)
         return 1
-    upload_body = (b"mini-oss-upload-body-" * ((args.object_size // 21) + 1))[: args.object_size]
+    clear_redis_prefix(args)
+    upload_body = make_body(b"mini-oss-upload-body-", args.upload_object_size)
     upload_body_path.write_bytes(upload_body)
     empty_body_path.write_bytes(b"")
     write_config(
@@ -557,6 +681,11 @@ def main() -> int:
         args.request_timeout_ms,
         args.upload_timeout_ms,
         args.log_queue_limit,
+        args.redis_enabled,
+        args.redis_host,
+        args.redis_port,
+        args.redis_key_prefix,
+        args.redis_ttl_seconds,
     )
 
     proc = start_server(config_path, args.threads)
@@ -564,10 +693,17 @@ def main() -> int:
     server_stderr = ""
     try:
         wait_for_server(args.port, proc)
-        seed = upload_seed_object(args.port, args.object_size)
-        instant_script, upload_script = write_wrk_scripts(Path("tmp"), seed, upload_body)
+        small_seed = upload_seed_object(
+            args.port, args.small_object_size, "benchmark-small.bin", b"mini-oss-small-"
+        )
+        large_seed = upload_seed_object(
+            args.port, args.large_object_size, "benchmark-large.bin", b"mini-oss-large-"
+        )
+        cache_probe = run_cache_probe(args, small_seed["id"])
+        instant_script, upload_script = write_wrk_scripts(Path("tmp"), large_seed, upload_body)
         url_base = f"http://127.0.0.1:{args.port}"
-        object_id = seed["id"]
+        small_object_id = small_seed["id"]
+        large_object_id = large_seed["id"]
 
         results = [
             run_ab_case(
@@ -576,10 +712,16 @@ def main() -> int:
                 "fixed-count baseline",
             ),
             run_ab_case(
-                "GET /objects/{id}",
+                "GET /objects/{id} small",
                 ab_base(args.read_requests, args.concurrency)
-                + ["-H", AUTH_HEADER, f"{url_base}/objects/{object_id}"],
-                "fixed-count metadata lookup + file read",
+                + ["-H", AUTH_HEADER, f"{url_base}/objects/{small_object_id}"],
+                "fixed-count small object metadata/cache path",
+            ),
+            run_ab_case(
+                "GET /objects/{id} large",
+                ab_base(args.read_requests, args.concurrency)
+                + ["-H", AUTH_HEADER, f"{url_base}/objects/{large_object_id}"],
+                "fixed-count EPOLLOUT + sendfile download path",
             ),
             run_ab_case(
                 "GET /objects/{id} Range",
@@ -589,7 +731,7 @@ def main() -> int:
                     AUTH_HEADER,
                     "-H",
                     "Range: bytes=0-1023",
-                    f"{url_base}/objects/{object_id}",
+                    f"{url_base}/objects/{large_object_id}",
                 ],
                 "fixed-count partial object read",
             ),
@@ -606,9 +748,9 @@ def main() -> int:
                     "-H",
                     "X-Filename: ab-instant.bin",
                     "-H",
-                    f"X-Object-Sha256: {seed['sha256']}",
+                    f"X-Object-Sha256: {large_seed['sha256']}",
                     "-H",
-                    f"X-Object-Size: {seed['size']}",
+                    f"X-Object-Size: {large_seed['size']}",
                     f"{url_base}/objects/instant",
                 ],
                 "fixed-count SHA-256 lookup + metadata insert",
@@ -635,9 +777,14 @@ def main() -> int:
                 "duration baseline",
             ),
             run_wrk_case(
-                "GET /objects/{id}",
-                wrk_download_base(args) + ["-H", AUTH_HEADER, f"{url_base}/objects/{object_id}"],
-                "duration metadata lookup + full object read",
+                "GET /objects/{id} small",
+                wrk_base(args) + ["-H", AUTH_HEADER, f"{url_base}/objects/{small_object_id}"],
+                "duration small object metadata/cache path",
+            ),
+            run_wrk_case(
+                "GET /objects/{id} large",
+                wrk_download_base(args) + ["-H", AUTH_HEADER, f"{url_base}/objects/{large_object_id}"],
+                "duration EPOLLOUT + sendfile download path",
             ),
             run_wrk_case(
                 "GET /objects/{id} Range",
@@ -647,7 +794,7 @@ def main() -> int:
                     AUTH_HEADER,
                     "-H",
                     "Range: bytes=0-1023",
-                    f"{url_base}/objects/{object_id}",
+                    f"{url_base}/objects/{large_object_id}",
                 ],
                 "duration partial object read",
             ),
@@ -676,7 +823,9 @@ def main() -> int:
         args,
         tool_version(["ab", "-V"]),
         tool_version(["wrk", "-v"]),
-        seed,
+        small_seed,
+        large_seed,
+        cache_probe,
         results,
         metrics,
         server_stdout,
@@ -688,7 +837,22 @@ def main() -> int:
             f"{item.tool} {item.name}: requests={item.requests} failed={item.failed} "
             f"qps={item.qps:.2f} mean_ms={item.mean_ms:.2f} p99_ms={item.p99_ms:.2f}"
         )
+    if cache_probe.enabled:
+        print(
+            "redis cache probe: "
+            f"first={cache_probe.first_get_status} second={cache_probe.second_get_status} "
+            f"hit_delta={cache_probe.hit_delta} miss_delta={cache_probe.miss_delta} "
+            f"error_delta={cache_probe.error_delta}"
+        )
 
+    if cache_probe.enabled and (
+        cache_probe.first_get_status != 200
+        or cache_probe.second_get_status != 200
+        or cache_probe.hit_delta < 1
+        or cache_probe.miss_delta < 1
+        or cache_probe.error_delta != 0
+    ):
+        return 1
     if any(item.failed != 0 for item in results):
         return 1
     return 0
