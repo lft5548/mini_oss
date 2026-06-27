@@ -128,6 +128,11 @@ HttpResponse HttpResponse::unauthorized()
     return text(401, "Unauthorized", "unauthorized\n");
 }
 
+HttpResponse HttpResponse::forbidden()
+{
+    return text(403, "Forbidden", "forbidden\n");
+}
+
 HttpResponse HttpResponse::rangeNotSatisfiable(std::uint64_t total_size)
 {
     return text(416, "Range Not Satisfiable", "range not satisfiable\n",

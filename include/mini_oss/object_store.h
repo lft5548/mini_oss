@@ -25,6 +25,9 @@ public:
     HttpResponse getObject(const HttpRequest& request);
     HttpResponse deleteObject(const HttpRequest& request);
 
+    MetadataStore& metadataStore();
+    const MetadataStore& metadataStore() const;
+
 private:
     struct ByteRange {
         std::uint64_t start = 0;
@@ -43,7 +46,7 @@ private:
                                                    std::string& error);
     HttpResponse createObjectFromFileBody(const HttpRequest& request);
     HttpResponse createMetadataAlias(const ObjectInfo& source, const std::string& filename,
-                                     bool instant_upload);
+                                     bool instant_upload, int owner_user_id);
     std::optional<ObjectInfo> getObjectMetadata(const std::string& id, std::string& error);
     std::optional<ObjectInfo> findObjectBySha256Cached(const std::string& sha256,
                                                        std::uint64_t size,

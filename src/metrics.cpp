@@ -97,6 +97,11 @@ void Metrics::recordRequest(int status_code, std::size_t request_bytes, std::siz
         status_5xx_.fetch_add(1, std::memory_order_relaxed);
     }
 
+    {
+        std::lock_guard<std::mutex> lock(status_codes_mutex_);
+        ++status_codes_[status_code];
+    }
+
     request_bytes_.fetch_add(static_cast<std::uint64_t>(request_bytes), std::memory_order_relaxed);
     response_bytes_.fetch_add(static_cast<std::uint64_t>(response_bytes), std::memory_order_relaxed);
     total_latency_ms_.fetch_add(duration_ms, std::memory_order_relaxed);
@@ -132,6 +137,10 @@ MetricsSnapshot Metrics::snapshot() const
     snapshot.metadata_cache_hits = metadata_cache_hits_.load(std::memory_order_relaxed);
     snapshot.metadata_cache_misses = metadata_cache_misses_.load(std::memory_order_relaxed);
     snapshot.metadata_cache_errors = metadata_cache_errors_.load(std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(status_codes_mutex_);
+        snapshot.status_codes = status_codes_;
+    }
     if (snapshot.total_requests > 0) {
         snapshot.average_latency_ms =
             static_cast<double>(snapshot.total_latency_ms) / snapshot.total_requests;
@@ -172,7 +181,17 @@ std::string Metrics::toJson() const
         << "\"average_latency_ms\":" << data.average_latency_ms << ","
         << "\"metadata_cache_hits\":" << data.metadata_cache_hits << ","
         << "\"metadata_cache_misses\":" << data.metadata_cache_misses << ","
-        << "\"metadata_cache_errors\":" << data.metadata_cache_errors
+        << "\"metadata_cache_errors\":" << data.metadata_cache_errors << ","
+        << "\"status_codes\":{";
+    bool first_status = true;
+    for (const auto& item : data.status_codes) {
+        if (!first_status) {
+            oss << ',';
+        }
+        first_status = false;
+        oss << "\"" << item.first << "\":" << item.second;
+    }
+    oss << "}"
         << "}";
     return oss.str();
 }

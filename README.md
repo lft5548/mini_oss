@@ -27,6 +27,7 @@ HTTP APIs, object metadata, file integrity verification, logging, monitoring, an
 - [Architecture](docs/architecture.md): system design, request lifecycle, threading model, storage design, resource guards, observability, testing, and interview explanation outline.
 - [Requirements](docs/requirements.md): project scope, current status, limitations, and advanced roadmap.
 - [Benchmark Report](docs/benchmark.md): repeatable ab/wrk benchmark commands, results, raw output, and metrics snapshot.
+- [Enterprise Backend Extension](docs/enterprise_backend.md): RBAC, audit logs, admin statistics APIs, verification, benchmark evidence, and resume wording.
 - [Deployment](docs/deployment.md): local scripts, Docker image, docker compose, runtime paths, and operational checks.
 - [Interview Guide](docs/interview_guide.md): interview narrative, design tradeoffs, verification evidence, and common follow-up answers.
 
@@ -107,6 +108,7 @@ The current MVP supports:
 - resource guards for max connections, worker queue length, slow request timeout, and slow upload timeout
 - SQLite metadata persistence under `storage/metadata.db`
 - optional Redis metadata cache for object lookup and SHA-256 dedup index lookup
+- user login, admin/user RBAC, object ownership checks, audit-log persistence, and admin statistics APIs for enterprise backend scenarios
 
 ## Tests
 
@@ -158,6 +160,7 @@ Expected checks:
 - Dockerfile, docker compose, and local start/stop/status scripts provide repeatable deployment paths
 - object APIs return `401 Unauthorized` when auth token is configured and missing
 - Redis cache smoke test validates cache hit/miss/error metrics and SQLite fallback
+- admin smoke checks validate login, ordinary-user `403`, admin user list, audit logs, overview stats, Redis hit rate, and status-code distribution
 
 ## Benchmark
 
@@ -173,7 +176,9 @@ The generated report is written to `docs/benchmark.md` and includes QPS, mean la
 
 ## Authentication
 
-If `auth.token` or `--auth-token` is set, object APIs require either `Authorization: Bearer <token>` or `X-Auth-Token: <token>`. `GET /health` and `GET /metrics` remain public.
+Object APIs accept login Bearer tokens and also keep the original legacy `auth.token` / `--auth-token` flow for compatibility. Admin APIs require an admin login token. `GET /health` and `GET /metrics` remain public.
+
+Development accounts are initialized on first startup: `admin/admin123` and `user/user123`. See [Enterprise Backend Extension](docs/enterprise_backend.md) for RBAC, audit, and admin API details.
 
 ## Redis Metadata Cache
 

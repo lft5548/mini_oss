@@ -16,11 +16,17 @@ void Router::addPrefixRoute(HttpMethod method, std::string prefix, Handler handl
 
 HttpResponse Router::route(const HttpRequest& request) const
 {
+    std::string path = request.path;
+    const auto query_pos = path.find('?');
+    if (query_pos != std::string::npos) {
+        path = path.substr(0, query_pos);
+    }
+
     bool path_exists = false;
     for (const auto& route : routes_) {
         const bool matched = route.prefix_match
-            ? request.path.rfind(route.path, 0) == 0 && request.path.size() > route.path.size()
-            : route.path == request.path;
+            ? path.rfind(route.path, 0) == 0 && path.size() > route.path.size()
+            : route.path == path;
 
         if (!matched) {
             continue;

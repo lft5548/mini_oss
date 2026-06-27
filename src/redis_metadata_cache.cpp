@@ -76,7 +76,10 @@ std::string serializeObjectInfo(const ObjectInfo& info)
         + fieldEncode(info.path.string())
         + fieldEncode(std::to_string(info.size))
         + fieldEncode(info.sha256)
-        + fieldEncode(info.created_at);
+        + fieldEncode(info.created_at)
+        + fieldEncode(std::to_string(info.owner_user_id))
+        + fieldEncode(std::to_string(info.upload_count))
+        + fieldEncode(std::to_string(info.download_count));
 }
 
 std::optional<ObjectInfo> deserializeObjectInfo(const std::string& value)
@@ -91,7 +94,7 @@ std::optional<ObjectInfo> deserializeObjectInfo(const std::string& value)
         }
         fields.push_back(std::move(field));
     }
-    if (fields.size() != 6) {
+    if (fields.size() != 6 && fields.size() != 9) {
         return std::nullopt;
     }
 
@@ -101,6 +104,23 @@ std::optional<ObjectInfo> deserializeObjectInfo(const std::string& value)
         return std::nullopt;
     }
 
+    std::uint64_t upload_count = 1;
+    std::uint64_t download_count = 0;
+    int owner_user_id = 0;
+    if (fields.size() == 9) {
+        char* owner_end = nullptr;
+        const auto owner = std::strtol(fields[6].c_str(), &owner_end, 10);
+        char* upload_end = nullptr;
+        upload_count = std::strtoull(fields[7].c_str(), &upload_end, 10);
+        char* download_end = nullptr;
+        download_count = std::strtoull(fields[8].c_str(), &download_end, 10);
+        if (owner_end == nullptr || *owner_end != '\0' || upload_end == nullptr
+            || *upload_end != '\0' || download_end == nullptr || *download_end != '\0') {
+            return std::nullopt;
+        }
+        owner_user_id = static_cast<int>(owner);
+    }
+
     ObjectInfo info;
     info.id = fields[0];
     info.filename = fields[1];
@@ -108,6 +128,9 @@ std::optional<ObjectInfo> deserializeObjectInfo(const std::string& value)
     info.size = static_cast<std::uint64_t>(size);
     info.sha256 = fields[4];
     info.created_at = fields[5];
+    info.owner_user_id = owner_user_id;
+    info.upload_count = upload_count;
+    info.download_count = download_count;
     return info;
 }
 

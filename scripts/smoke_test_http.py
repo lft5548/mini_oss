@@ -187,6 +187,22 @@ def main() -> int:
         missing = request("/not-found")
         method_not_allowed = request("/health", method="POST")
         bad_request = request("/", raw_request=b"BAD_REQUEST\r\n\r\n")
+        admin_login = request(
+            "/auth/login",
+            method="POST",
+            body=b'{"username":"admin","password":"admin123"}',
+        )
+        admin_token = json.loads(response_body(admin_login))["token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+        user_login = request(
+            "/auth/login",
+            method="POST",
+            body=b'{"username":"user","password":"user123"}',
+        )
+        user_token = json.loads(response_body(user_login))["token"]
+        user_headers = {"Authorization": f"Bearer {user_token}"}
+        admin_users = request("/admin/users", headers=admin_headers)
+        user_stats_forbidden = request("/admin/stats/overview", headers=user_headers)
         unauthorized_upload = request(
             "/objects",
             method="POST",
@@ -279,6 +295,11 @@ def main() -> int:
         )
         upload_metrics = request("/metrics")
         upload_metrics_body = json.loads(response_body(upload_metrics))
+        admin_stats = request("/admin/stats/overview", headers=admin_headers)
+        admin_stats_body = json.loads(response_body(admin_stats))
+        admin_status_codes = request("/admin/stats/status-codes", headers=admin_headers)
+        admin_audit_logs = request("/admin/audit-logs?limit=20", headers=admin_headers)
+        admin_audit_body = json.loads(response_body(admin_audit_logs))
         stop_server(proc)
 
         proc = start_server(config_path)
@@ -314,6 +335,14 @@ def main() -> int:
     print(method_not_allowed)
     print("=== bad request ===")
     print(bad_request)
+    print("=== POST /auth/login admin ===")
+    print(admin_login)
+    print("=== POST /auth/login user ===")
+    print(user_login)
+    print("=== GET /admin/users ===")
+    print(admin_users)
+    print("=== GET /admin/stats/overview as user ===")
+    print(user_stats_forbidden)
     print("=== POST /objects without auth ===")
     print(unauthorized_upload)
     print("=== POST /objects ===")
@@ -346,6 +375,14 @@ def main() -> int:
     print(upload_metrics)
     print("=== parsed metrics before restart ===")
     print(upload_metrics_body)
+    print("=== GET /admin/stats/overview ===")
+    print(admin_stats)
+    print("=== parsed admin stats ===")
+    print(admin_stats_body)
+    print("=== GET /admin/stats/status-codes ===")
+    print(admin_status_codes)
+    print("=== GET /admin/audit-logs ===")
+    print(admin_audit_logs)
     print("=== concurrent upload ids ===")
     print(parallel_ids)
     print("=== GET /objects after restart ===")
@@ -407,6 +444,18 @@ def main() -> int:
         return 1
     if "HTTP/1.1 400 Bad Request" not in bad_request:
         print("400 check failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in admin_login or "admin" not in admin_login:
+        print("admin login failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in user_login or "user" not in user_login:
+        print("user login failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in admin_users or "admin" not in admin_users or "user" not in admin_users:
+        print("admin user list failed", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 403 Forbidden" not in user_stats_forbidden:
+        print("ordinary user admin stats should be forbidden", file=sys.stderr)
         return 1
     if "HTTP/1.1 401 Unauthorized" not in unauthorized_upload:
         print("unauthorized upload check failed", file=sys.stderr)
@@ -481,6 +530,22 @@ def main() -> int:
         return 1
     if not set(parallel_ids).issubset(listed_ids):
         print("concurrent uploaded objects missing from list", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in admin_stats:
+        print("admin stats failed", file=sys.stderr)
+        return 1
+    if admin_stats_body.get("file_total", 0) < len(listed_ids):
+        print("admin stats file_total is too small", file=sys.stderr)
+        return 1
+    if "redis_hit_rate" not in admin_stats_body or "status_codes" not in admin_stats_body:
+        print("admin stats missing redis/status fields", file=sys.stderr)
+        return 1
+    if "HTTP/1.1 200 OK" not in admin_status_codes or "status_codes" not in admin_status_codes:
+        print("admin status code stats failed", file=sys.stderr)
+        return 1
+    audit_actions = {item.get("action") for item in admin_audit_body.get("audit_logs", [])}
+    if "upload_object" not in audit_actions or "query_admin_stats" not in audit_actions:
+        print("admin audit logs missed expected actions", file=sys.stderr)
         return 1
     if "HTTP/1.1 200 OK" not in download or "hello mini oss" not in download:
         print("object download failed", file=sys.stderr)

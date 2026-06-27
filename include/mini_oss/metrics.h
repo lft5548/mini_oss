@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <mutex>
 #include <string>
 
 namespace mini_oss {
@@ -36,6 +38,7 @@ struct MetricsSnapshot {
     std::uint64_t metadata_cache_hits = 0;
     std::uint64_t metadata_cache_misses = 0;
     std::uint64_t metadata_cache_errors = 0;
+    std::map<int, std::uint64_t> status_codes;
 };
 
 class Metrics {
@@ -87,6 +90,8 @@ private:
     std::atomic<std::uint64_t> metadata_cache_hits_ {0};
     std::atomic<std::uint64_t> metadata_cache_misses_ {0};
     std::atomic<std::uint64_t> metadata_cache_errors_ {0};
+    mutable std::mutex status_codes_mutex_;
+    std::map<int, std::uint64_t> status_codes_;
 };
 
 } // namespace mini_oss

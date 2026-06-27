@@ -41,6 +41,7 @@ function(mini_oss_apply_common_options target_name)
 endfunction()
 
 set(MINI_OSS_CORE_SOURCES
+    src/auth_service.cpp
     src/config.cpp
     src/http.cpp
     src/http_server.cpp

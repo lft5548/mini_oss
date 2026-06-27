@@ -5,12 +5,15 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <netinet/in.h>
 #include <optional>
@@ -77,6 +80,192 @@ void cleanupTemporaryRequestBody(const HttpRequest& request)
     }
 }
 
+std::string pathWithoutQuery(const std::string& path)
+{
+    const auto query_pos = path.find('?');
+    return query_pos == std::string::npos ? path : path.substr(0, query_pos);
+}
+
+std::map<std::string, std::string> queryParams(const std::string& path)
+{
+    std::map<std::string, std::string> params;
+    const auto query_pos = path.find('?');
+    if (query_pos == std::string::npos || query_pos + 1 >= path.size()) {
+        return params;
+    }
+
+    std::size_t pos = query_pos + 1;
+    while (pos < path.size()) {
+        const auto amp = path.find('&', pos);
+        const auto end = amp == std::string::npos ? path.size() : amp;
+        const auto equals = path.find('=', pos);
+        if (equals != std::string::npos && equals < end) {
+            params[path.substr(pos, equals - pos)] = path.substr(equals + 1, end - equals - 1);
+        } else if (end > pos) {
+            params[path.substr(pos, end - pos)] = "";
+        }
+        if (amp == std::string::npos) {
+            break;
+        }
+        pos = amp + 1;
+    }
+    return params;
+}
+
+std::string jsonEscape(const std::string& value)
+{
+    std::ostringstream oss;
+    for (char ch : value) {
+        switch (ch) {
+        case '\\':
+            oss << "\\\\";
+            break;
+        case '"':
+            oss << "\\\"";
+            break;
+        case '\n':
+            oss << "\\n";
+            break;
+        case '\r':
+            oss << "\\r";
+            break;
+        case '\t':
+            oss << "\\t";
+            break;
+        default:
+            oss << ch;
+            break;
+        }
+    }
+    return oss.str();
+}
+
+std::string nowIso()
+{
+    const auto current = std::chrono::system_clock::now();
+    const auto time = std::chrono::system_clock::to_time_t(current);
+    std::tm tm {};
+    gmtime_r(&time, &tm);
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
+    return oss.str();
+}
+
+std::size_t parseSizeOrDefault(const std::string& value, std::size_t fallback)
+{
+    if (value.empty()) {
+        return fallback;
+    }
+    char* end = nullptr;
+    const auto parsed = std::strtoull(value.c_str(), &end, 10);
+    if (end == value.c_str() || *end != '\0') {
+        return fallback;
+    }
+    return static_cast<std::size_t>(parsed);
+}
+
+std::string jsonStringValue(const std::string& body, const std::string& key)
+{
+    const std::string quoted_key = "\"" + key + "\"";
+    const auto key_pos = body.find(quoted_key);
+    if (key_pos == std::string::npos) {
+        return {};
+    }
+    const auto colon = body.find(':', key_pos + quoted_key.size());
+    if (colon == std::string::npos) {
+        return {};
+    }
+    const auto first_quote = body.find('"', colon + 1);
+    if (first_quote == std::string::npos) {
+        return {};
+    }
+    const auto second_quote = body.find('"', first_quote + 1);
+    if (second_quote == std::string::npos) {
+        return {};
+    }
+    return body.substr(first_quote + 1, second_quote - first_quote - 1);
+}
+
+std::string rolesJson(const std::vector<std::string>& roles)
+{
+    std::ostringstream oss;
+    oss << '[';
+    bool first = true;
+    for (const auto& role : roles) {
+        if (!first) {
+            oss << ',';
+        }
+        first = false;
+        oss << "\"" << jsonEscape(role) << "\"";
+    }
+    oss << ']';
+    return oss.str();
+}
+
+std::string statusCodesJson(const std::map<int, std::uint64_t>& status_codes)
+{
+    std::ostringstream oss;
+    oss << '{';
+    bool first = true;
+    for (const auto& item : status_codes) {
+        if (!first) {
+            oss << ',';
+        }
+        first = false;
+        oss << "\"" << item.first << "\":" << item.second;
+    }
+    oss << '}';
+    return oss.str();
+}
+
+std::string extractObjectIdFromPath(const std::string& request_path)
+{
+    const std::string path = pathWithoutQuery(request_path);
+    constexpr const char* prefix = "/objects/";
+    if (path.rfind(prefix, 0) != 0 || path.size() <= std::string(prefix).size()) {
+        return {};
+    }
+    const auto id = path.substr(std::string(prefix).size());
+    return id.find('/') == std::string::npos ? id : std::string();
+}
+
+std::string actionForRequest(const HttpRequest& request)
+{
+    const std::string path = pathWithoutQuery(request.path);
+    if (path == "/auth/login") {
+        return "login";
+    }
+    if (path == "/objects" && request.method == HttpMethod::Post) {
+        return "upload_object";
+    }
+    if (path == "/objects/instant" && request.method == HttpMethod::Post) {
+        return "instant_upload";
+    }
+    if (path == "/objects" && request.method == HttpMethod::Get) {
+        return "list_objects";
+    }
+    if (path.rfind("/objects/", 0) == 0 && request.method == HttpMethod::Get) {
+        return "download_object";
+    }
+    if (path.rfind("/objects/", 0) == 0 && request.method == HttpMethod::Delete) {
+        return "delete_object";
+    }
+    if (path == "/admin/users" && request.method == HttpMethod::Get) {
+        return "list_users";
+    }
+    if (path.rfind("/admin/users/", 0) == 0 && request.method == HttpMethod::Put) {
+        return "update_user_roles";
+    }
+    if (path == "/admin/audit-logs") {
+        return "query_audit_logs";
+    }
+    if (path.rfind("/admin/stats/", 0) == 0) {
+        return "query_admin_stats";
+    }
+    return {};
+}
+
 } // namespace
 
 HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
@@ -100,11 +289,39 @@ HttpServer::HttpServer(std::uint16_t port, std::size_t worker_threads,
     , request_timeout_ms_(request_timeout_ms)
     , upload_timeout_ms_(upload_timeout_ms)
     , object_store_(std::move(storage_dir), std::move(redis_config), &metrics_)
+    , auth_service_(object_store_.metadataStore())
     , thread_pool_(worker_threads, thread_queue_limit)
 {
     if (stream_upload_threshold_bytes_ > max_upload_bytes_) {
         stream_upload_threshold_bytes_ = max_upload_bytes_;
     }
+
+    std::string auth_error;
+    if (!auth_service_.initializeDefaults(auth_error)) {
+        logger_.error("cannot initialize default users and roles: " + auth_error);
+    }
+
+    router_.addRoute(HttpMethod::Post, "/auth/login", [this](const HttpRequest& request) {
+        return auth_service_.login(request);
+    });
+    router_.addRoute(HttpMethod::Get, "/admin/users", [this](const HttpRequest& request) {
+        return handleAdminUsers(request);
+    });
+    router_.addPrefixRoute(HttpMethod::Put, "/admin/users/", [this](const HttpRequest& request) {
+        return handleUpdateUserRoles(request);
+    });
+    router_.addRoute(HttpMethod::Get, "/admin/audit-logs", [this](const HttpRequest& request) {
+        return handleAuditLogs(request);
+    });
+    router_.addRoute(HttpMethod::Get, "/admin/stats/overview", [this](const HttpRequest& request) {
+        return handleAdminStatsOverview(request);
+    });
+    router_.addRoute(HttpMethod::Get, "/admin/stats/status-codes", [this](const HttpRequest& request) {
+        return handleAdminStatsStatusCodes(request);
+    });
+    router_.addRoute(HttpMethod::Get, "/admin/stats/redis", [this](const HttpRequest& request) {
+        return handleAdminStatsRedis(request);
+    });
 
     router_.addRoute(HttpMethod::Get, "/health", [](const HttpRequest&) {
         return HttpResponse::json(200, "OK", "{\"status\":\"ok\"}\n");
@@ -421,10 +638,12 @@ void HttpServer::handleClientRead(int client_fd)
                 }
 
                 if (shouldStreamUpload(head_result.request, content_length.value())) {
-                    if (!isAuthorized(head_result.request)) {
-                        sendImmediateResponse(client_fd, HttpResponse::unauthorized(),
-                                              httpMethodName(head_result.request.method),
-                                              head_result.request.path, body_begin);
+                    HttpRequest stream_request = head_result.request;
+                    const auto auth_response = authorizeRequest(stream_request);
+                    if (auth_response.has_value()) {
+                        sendImmediateResponse(client_fd, auth_response.value(),
+                                              httpMethodName(stream_request.method),
+                                              stream_request.path, body_begin);
                         return;
                     }
                     if (content_length.value() > max_upload_bytes_) {
@@ -447,7 +666,7 @@ void HttpServer::handleClientRead(int client_fd)
                         return;
                     }
 
-                    if (!beginStreamingUpload(client_fd, state, head_result.request,
+                    if (!beginStreamingUpload(client_fd, state, std::move(stream_request),
                                               content_length.value(),
                                               static_cast<std::size_t>(request_bytes))) {
                         sendImmediateResponse(client_fd,
@@ -572,8 +791,10 @@ void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::str
             ? static_cast<std::size_t>(request.body_size)
             : request.body.size();
 
-        if (!isAuthorized(request)) {
-            http_response = HttpResponse::unauthorized();
+        request.request_id = std::to_string(next_request_id_.fetch_add(1, std::memory_order_relaxed));
+        const auto auth_response = authorizeRequest(request);
+        if (auth_response.has_value()) {
+            http_response = auth_response.value();
         } else {
             http_response = router_.route(request);
             if (object_upload && http_response.statusCode() >= 200
@@ -581,6 +802,7 @@ void HttpServer::submitRequest(int client_fd, std::uint64_t generation, std::str
                 metrics_.recordObjectUpload(upload_body_size, streamed_upload);
             }
         }
+        recordAudit(request, http_response, remote_addr, started_at);
         cleanupTemporaryRequestBody(request);
 
         enqueueResponse(client_fd, generation, std::move(http_response), remote_addr, method, path,
@@ -964,15 +1186,46 @@ void HttpServer::submitStreamingUpload(int client_fd, ClientState& state)
 
 bool HttpServer::requiresAuth(const HttpRequest& request) const
 {
-    return request.path == "/objects" || request.path.rfind("/objects/", 0) == 0;
+    const std::string path = pathWithoutQuery(request.path);
+    return path == "/objects" || path.rfind("/objects/", 0) == 0
+        || path.rfind("/admin/", 0) == 0;
 }
 
-bool HttpServer::isAuthorized(const HttpRequest& request) const
+std::optional<HttpResponse> HttpServer::authorizeRequest(HttpRequest& request)
 {
-    if (auth_token_.empty() || !requiresAuth(request)) {
-        return true;
+    if (!requiresAuth(request)) {
+        return std::nullopt;
     }
 
+    const std::string path = pathWithoutQuery(request.path);
+    std::string error;
+    if (auth_service_.authenticate(request, error)) {
+        if (path.rfind("/admin/", 0) == 0 && !request.is_admin) {
+            return HttpResponse::forbidden();
+        }
+        return std::nullopt;
+    }
+
+    if (path.rfind("/admin/", 0) == 0) {
+        return HttpResponse::unauthorized();
+    }
+
+    if (isLegacyTokenAuthorized(request)) {
+        request.authenticated = true;
+        request.is_admin = true;
+        request.legacy_token = true;
+        request.username = "legacy-token";
+        request.roles = {"admin"};
+        return std::nullopt;
+    }
+    return HttpResponse::unauthorized();
+}
+
+bool HttpServer::isLegacyTokenAuthorized(const HttpRequest& request) const
+{
+    if (auth_token_.empty()) {
+        return false;
+    }
     const auto token_it = request.headers.find("x-auth-token");
     if (token_it != request.headers.end() && token_it->second == auth_token_) {
         return true;
@@ -985,6 +1238,221 @@ bool HttpServer::isAuthorized(const HttpRequest& request) const
 
     const std::string bearer_prefix = "Bearer ";
     return authorization_it->second == bearer_prefix + auth_token_;
+}
+
+HttpResponse HttpServer::handleAdminUsers(const HttpRequest&)
+{
+    std::string error;
+    const auto users = object_store_.metadataStore().listUsers(error);
+    if (!error.empty()) {
+        return HttpResponse::text(500, "Internal Server Error", "cannot list users: " + error + "\n");
+    }
+
+    std::ostringstream body;
+    body << "{\"users\":[";
+    bool first = true;
+    for (const auto& user : users) {
+        if (!first) {
+            body << ',';
+        }
+        first = false;
+        body << "{"
+             << "\"id\":" << user.id << ','
+             << "\"username\":\"" << jsonEscape(user.username) << "\","
+             << "\"status\":" << user.status << ','
+             << "\"roles\":" << rolesJson(user.roles) << ','
+             << "\"created_at\":\"" << jsonEscape(user.created_at) << "\","
+             << "\"updated_at\":\"" << jsonEscape(user.updated_at) << "\","
+             << "\"last_login_at\":\"" << jsonEscape(user.last_login_at) << "\""
+             << "}";
+    }
+    body << "]}\n";
+    return HttpResponse::json(200, "OK", body.str());
+}
+
+HttpResponse HttpServer::handleUpdateUserRoles(const HttpRequest& request)
+{
+    const std::string path = pathWithoutQuery(request.path);
+    constexpr const char* prefix = "/admin/users/";
+    constexpr const char* suffix = "/roles";
+    if (path.rfind(prefix, 0) != 0 || path.size() <= std::string(prefix).size()
+        || path.size() < std::string(suffix).size()
+        || path.substr(path.size() - std::string(suffix).size()) != suffix) {
+        return HttpResponse::badRequest("invalid user role path");
+    }
+
+    const auto id_text = path.substr(std::string(prefix).size(),
+                                     path.size() - std::string(prefix).size()
+                                         - std::string(suffix).size());
+    const auto user_id = parseSizeOrDefault(id_text, 0);
+    if (user_id == 0) {
+        return HttpResponse::badRequest("invalid user id");
+    }
+
+    std::string role = jsonStringValue(request.body, "role");
+    if (role.empty()) {
+        const auto role_header = request.headers.find("x-role");
+        if (role_header != request.headers.end()) {
+            role = role_header->second;
+        }
+    }
+    if (role != "admin" && role != "user") {
+        return HttpResponse::badRequest("role must be admin or user");
+    }
+
+    const std::vector<std::string> roles = role == "admin"
+        ? std::vector<std::string> {"admin"}
+        : std::vector<std::string> {"user"};
+    std::string error;
+    if (!object_store_.metadataStore().replaceUserRoles(static_cast<int>(user_id), roles, error)) {
+        return HttpResponse::text(500, "Internal Server Error", "cannot update user roles: " + error + "\n");
+    }
+    return HttpResponse::json(200, "OK",
+                              std::string("{\"updated\":true,\"user_id\":")
+                                  + std::to_string(user_id) + ",\"roles\":" + rolesJson(roles) + "}\n");
+}
+
+HttpResponse HttpServer::handleAuditLogs(const HttpRequest& request)
+{
+    const auto params = queryParams(request.path);
+    AuditLogQuery query;
+    auto it = params.find("limit");
+    if (it != params.end()) {
+        query.limit = std::min<std::size_t>(parseSizeOrDefault(it->second, query.limit), 500);
+    }
+    it = params.find("offset");
+    if (it != params.end()) {
+        query.offset = parseSizeOrDefault(it->second, 0);
+    }
+    it = params.find("user_id");
+    if (it != params.end()) {
+        query.user_id = static_cast<int>(parseSizeOrDefault(it->second, 0));
+    }
+    it = params.find("action");
+    if (it != params.end()) {
+        query.action = it->second;
+    }
+
+    std::string error;
+    const auto records = object_store_.metadataStore().listAuditLogs(query, error);
+    if (!error.empty()) {
+        return HttpResponse::text(500, "Internal Server Error", "cannot list audit logs: " + error + "\n");
+    }
+
+    std::ostringstream body;
+    body << "{\"audit_logs\":[";
+    bool first = true;
+    for (const auto& record : records) {
+        if (!first) {
+            body << ',';
+        }
+        first = false;
+        body << "{"
+             << "\"id\":" << record.id << ','
+             << "\"request_id\":\"" << jsonEscape(record.request_id) << "\","
+             << "\"user_id\":" << record.user_id << ','
+             << "\"username\":\"" << jsonEscape(record.username) << "\","
+             << "\"method\":\"" << jsonEscape(record.method) << "\","
+             << "\"path\":\"" << jsonEscape(record.path) << "\","
+             << "\"action\":\"" << jsonEscape(record.action) << "\","
+             << "\"file_id\":\"" << jsonEscape(record.file_id) << "\","
+             << "\"status_code\":" << record.status_code << ','
+             << "\"result\":\"" << jsonEscape(record.result) << "\","
+             << "\"error_message\":\"" << jsonEscape(record.error_message) << "\","
+             << "\"client_ip\":\"" << jsonEscape(record.client_ip) << "\","
+             << "\"latency_ms\":" << record.latency_ms << ','
+             << "\"created_at\":\"" << jsonEscape(record.created_at) << "\""
+             << "}";
+    }
+    body << "]}\n";
+    return HttpResponse::json(200, "OK", body.str());
+}
+
+HttpResponse HttpServer::handleAdminStatsOverview(const HttpRequest&)
+{
+    std::string error;
+    const auto storage = object_store_.metadataStore().objectStorageStats(error);
+    if (!error.empty()) {
+        return HttpResponse::text(500, "Internal Server Error", "cannot load storage stats: " + error + "\n");
+    }
+    const auto metrics = metrics_.snapshot();
+    const auto redis_total = metrics.metadata_cache_hits + metrics.metadata_cache_misses;
+    const double redis_hit_rate = redis_total == 0
+        ? 0.0
+        : static_cast<double>(metrics.metadata_cache_hits) / static_cast<double>(redis_total);
+
+    std::ostringstream body;
+    body << std::fixed << std::setprecision(3)
+         << "{"
+         << "\"file_total\":" << storage.file_total << ','
+         << "\"storage_bytes\":" << storage.storage_bytes << ','
+         << "\"upload_count\":" << storage.upload_count << ','
+         << "\"download_count\":" << storage.download_count << ','
+         << "\"failed_request_count\":" << metrics.failed_requests << ','
+         << "\"redis_hit_count\":" << metrics.metadata_cache_hits << ','
+         << "\"redis_miss_count\":" << metrics.metadata_cache_misses << ','
+         << "\"redis_error_count\":" << metrics.metadata_cache_errors << ','
+         << "\"redis_hit_rate\":" << redis_hit_rate << ','
+         << "\"status_codes\":" << statusCodesJson(metrics.status_codes)
+         << "}\n";
+    return HttpResponse::json(200, "OK", body.str());
+}
+
+HttpResponse HttpServer::handleAdminStatsStatusCodes(const HttpRequest&)
+{
+    const auto metrics = metrics_.snapshot();
+    return HttpResponse::json(200, "OK", std::string("{\"status_codes\":")
+                                  + statusCodesJson(metrics.status_codes) + "}\n");
+}
+
+HttpResponse HttpServer::handleAdminStatsRedis(const HttpRequest&)
+{
+    const auto metrics = metrics_.snapshot();
+    const auto redis_total = metrics.metadata_cache_hits + metrics.metadata_cache_misses;
+    const double redis_hit_rate = redis_total == 0
+        ? 0.0
+        : static_cast<double>(metrics.metadata_cache_hits) / static_cast<double>(redis_total);
+
+    std::ostringstream body;
+    body << std::fixed << std::setprecision(3)
+         << "{"
+         << "\"redis_hit_count\":" << metrics.metadata_cache_hits << ','
+         << "\"redis_miss_count\":" << metrics.metadata_cache_misses << ','
+         << "\"redis_error_count\":" << metrics.metadata_cache_errors << ','
+         << "\"redis_hit_rate\":" << redis_hit_rate
+         << "}\n";
+    return HttpResponse::json(200, "OK", body.str());
+}
+
+void HttpServer::recordAudit(const HttpRequest& request, const HttpResponse& response,
+                             const std::string& remote_addr,
+                             std::chrono::steady_clock::time_point started_at)
+{
+    const auto action = actionForRequest(request);
+    if (action.empty()) {
+        return;
+    }
+
+    AuditLogRecord record;
+    record.request_id = request.request_id.empty() ? "-" : request.request_id;
+    record.user_id = request.user_id;
+    record.username = request.username;
+    record.method = httpMethodName(request.method);
+    record.path = request.path;
+    record.action = action;
+    if (action == "download_object" || action == "delete_object") {
+        record.file_id = extractObjectIdFromPath(request.path);
+    }
+    record.status_code = response.statusCode();
+    record.result = response.statusCode() >= 200 && response.statusCode() < 400 ? "success" : "failure";
+    record.client_ip = remote_addr;
+    record.latency_ms = elapsedMs(started_at);
+    record.created_at = nowIso();
+
+    std::string error;
+    if (!object_store_.metadataStore().insertAuditLog(record, error)) {
+        logger_.error("cannot insert audit log: " + error);
+    }
 }
 
 void HttpServer::logAccess(const std::string& remote, const std::string& method,

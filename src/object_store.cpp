@@ -73,7 +73,10 @@ std::string objectInfoJson(const ObjectInfo& info, const std::string& extra_fiel
          << "\"filename\":\"" << jsonEscape(info.filename) << "\","
          << "\"size\":" << info.size << ","
          << "\"sha256\":\"" << info.sha256 << "\","
-         << "\"created_at\":\"" << info.created_at << "\"";
+         << "\"created_at\":\"" << info.created_at << "\","
+         << "\"owner_user_id\":" << info.owner_user_id << ','
+         << "\"upload_count\":" << info.upload_count << ','
+         << "\"download_count\":" << info.download_count;
     if (!extra_fields.empty()) {
         body << ',' << extra_fields;
     }
@@ -85,6 +88,20 @@ std::string objectInfoJson(const ObjectInfo& info, const std::string& extra_fiel
 int openObjectFile(const std::filesystem::path& path)
 {
     return ::open(path.string().c_str(), O_RDONLY | O_CLOEXEC);
+}
+
+std::string pathWithoutQuery(const std::string& path)
+{
+    const auto query_pos = path.find('?');
+    return query_pos == std::string::npos ? path : path.substr(0, query_pos);
+}
+
+bool canAccessObject(const HttpRequest& request, const ObjectInfo& info)
+{
+    if (!request.authenticated || request.is_admin || request.legacy_token || request.user_id == 0) {
+        return true;
+    }
+    return info.owner_user_id == request.user_id;
 }
 
 } // namespace
@@ -128,7 +145,7 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
 
         const std::string filename = sanitizeFilename(
             headerOrDefault(request, "x-filename", existing->filename));
-        return createMetadataAlias(existing.value(), filename, false);
+        return createMetadataAlias(existing.value(), filename, false, request.user_id);
     }
 
     const auto id = metadata_store_.nextObjectId(error);
@@ -155,6 +172,9 @@ HttpResponse ObjectStore::createObject(const HttpRequest& request)
     info.size = object_size;
     info.sha256 = object_sha256;
     info.created_at = now();
+    info.owner_user_id = request.user_id;
+    info.upload_count = 1;
+    info.download_count = 0;
 
     if (!insertObjectMetadata(info, error)) {
         std::error_code ec;
@@ -195,15 +215,17 @@ HttpResponse ObjectStore::createInstantObject(const HttpRequest& request)
 
     const std::string filename = sanitizeFilename(
         headerOrDefault(request, "x-filename", existing->filename));
-    return createMetadataAlias(existing.value(), filename, true);
+    return createMetadataAlias(existing.value(), filename, true, request.user_id);
 }
 
-HttpResponse ObjectStore::listObjects(const HttpRequest&)
+HttpResponse ObjectStore::listObjects(const HttpRequest& request)
 {
     std::shared_lock<std::shared_mutex> lock(mutex_);
 
     std::string error;
-    const auto objects = metadata_store_.listObjects(error);
+    const auto objects = request.authenticated && !request.is_admin && !request.legacy_token
+        ? metadata_store_.listObjectsForOwner(request.user_id, error)
+        : metadata_store_.listObjects(error);
     if (!error.empty()) {
         return HttpResponse::text(500, "Internal Server Error", "cannot list object metadata: " + error + "\n");
     }
@@ -240,6 +262,14 @@ HttpResponse ObjectStore::getObject(const HttpRequest& request)
     }
     if (!info.has_value()) {
         return HttpResponse::notFound();
+    }
+    if (!canAccessObject(request, info.value())) {
+        return HttpResponse::forbidden();
+    }
+
+    if (!metadata_store_.incrementObjectDownloadCount(info->id, error)) {
+        return HttpResponse::text(500, "Internal Server Error",
+                                  "cannot update download count: " + error + "\n");
     }
 
     const int fd = openObjectFile(info->path);
@@ -286,6 +316,9 @@ HttpResponse ObjectStore::deleteObject(const HttpRequest& request)
     if (!info.has_value()) {
         return HttpResponse::notFound();
     }
+    if (!canAccessObject(request, info.value())) {
+        return HttpResponse::forbidden();
+    }
 
     if (!deleteObjectMetadata(info.value(), error)) {
         return error == "invalid object id" ? HttpResponse::badRequest(error)
@@ -315,10 +348,11 @@ HttpResponse ObjectStore::deleteObject(const HttpRequest& request)
 
 std::string ObjectStore::extractObjectId(const std::string& path)
 {
-    if (path.rfind(kObjectsPrefix, 0) != 0 || path.size() <= std::string(kObjectsPrefix).size()) {
+    const std::string clean_path = pathWithoutQuery(path);
+    if (clean_path.rfind(kObjectsPrefix, 0) != 0 || clean_path.size() <= std::string(kObjectsPrefix).size()) {
         return {};
     }
-    const std::string id = path.substr(std::string(kObjectsPrefix).size());
+    const std::string id = clean_path.substr(std::string(kObjectsPrefix).size());
     return id.find('/') == std::string::npos ? id : std::string();
 }
 
@@ -547,7 +581,7 @@ HttpResponse ObjectStore::createObjectFromFileBody(const HttpRequest& request)
         const std::string filename = sanitizeFilename(
             headerOrDefault(request, "x-filename", existing->filename));
         cleanup_temp();
-        return createMetadataAlias(existing.value(), filename, false);
+        return createMetadataAlias(existing.value(), filename, false, request.user_id);
     }
 
     const auto id = metadata_store_.nextObjectId(error);
@@ -579,6 +613,9 @@ HttpResponse ObjectStore::createObjectFromFileBody(const HttpRequest& request)
     info.size = object_size;
     info.sha256 = object_sha256.value();
     info.created_at = now();
+    info.owner_user_id = request.user_id;
+    info.upload_count = 1;
+    info.download_count = 0;
 
     if (!insertObjectMetadata(info, error)) {
         std::error_code remove_error;
@@ -590,7 +627,7 @@ HttpResponse ObjectStore::createObjectFromFileBody(const HttpRequest& request)
 }
 
 HttpResponse ObjectStore::createMetadataAlias(const ObjectInfo& source, const std::string& filename,
-                                              bool instant_upload)
+                                              bool instant_upload, int owner_user_id)
 {
     std::string error;
     const auto id = metadata_store_.nextObjectId(error);
@@ -605,6 +642,9 @@ HttpResponse ObjectStore::createMetadataAlias(const ObjectInfo& source, const st
     info.size = source.size;
     info.sha256 = source.sha256;
     info.created_at = now();
+    info.owner_user_id = owner_user_id;
+    info.upload_count = 1;
+    info.download_count = 0;
 
     if (!insertObjectMetadata(info, error)) {
         return HttpResponse::text(500, "Internal Server Error",
@@ -616,6 +656,16 @@ HttpResponse ObjectStore::createMetadataAlias(const ObjectInfo& source, const st
           << "\"instant_upload\":" << (instant_upload ? "true" : "false") << ','
           << "\"source_id\":\"" << jsonEscape(source.id) << "\"";
     return HttpResponse::json(201, "Created", objectInfoJson(info, extra.str()) + "\n");
+}
+
+MetadataStore& ObjectStore::metadataStore()
+{
+    return metadata_store_;
+}
+
+const MetadataStore& ObjectStore::metadataStore() const
+{
+    return metadata_store_;
 }
 
 std::optional<ObjectInfo> ObjectStore::getObjectMetadata(const std::string& id, std::string& error)

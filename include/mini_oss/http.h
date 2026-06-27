@@ -42,6 +42,13 @@ struct HttpRequest {
     std::uint64_t body_size = 0;
     bool body_in_file = false;
     bool temporary_body_file = false;
+    std::string request_id;
+    bool authenticated = false;
+    bool is_admin = false;
+    bool legacy_token = false;
+    int user_id = 0;
+    std::string username;
+    std::vector<std::string> roles;
 };
 
 class HttpResponse {
@@ -61,6 +68,7 @@ public:
     static HttpResponse notFound();
     static HttpResponse methodNotAllowed();
     static HttpResponse unauthorized();
+    static HttpResponse forbidden();
     static HttpResponse rangeNotSatisfiable(std::uint64_t total_size);
 
     int statusCode() const;

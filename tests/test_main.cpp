@@ -1,3 +1,4 @@
+#include "mini_oss/auth_service.h"
 #include "mini_oss/config.h"
 #include "mini_oss/http.h"
 #include "mini_oss/object_store.h"
@@ -218,6 +219,84 @@ void testRedisMetadataSerialization()
            "invalid redis metadata should fail parsing");
 }
 
+void testAuthAuditAndStats()
+{
+    const auto root = makeTempDir("auth_audit_stats");
+    {
+        mini_oss::MetadataStore metadata(root / "metadata.db");
+        mini_oss::AuthService auth(metadata);
+        std::string error;
+        expect(auth.initializeDefaults(error), "default users and roles should initialize");
+
+        HttpRequest bad_login;
+        bad_login.method = HttpMethod::Post;
+        bad_login.path = "/auth/login";
+        bad_login.body = "{\"username\":\"admin\",\"password\":\"bad\"}";
+        expect(auth.login(bad_login).statusCode() == 401, "bad password should be unauthorized");
+
+        HttpRequest login;
+        login.method = HttpMethod::Post;
+        login.path = "/auth/login";
+        login.body = "{\"username\":\"admin\",\"password\":\"admin123\"}";
+        const auto login_response = auth.login(login);
+        expect(login_response.statusCode() == 200, "admin login should succeed");
+        const auto login_body = responseBody(login_response);
+        const auto token_key = std::string("\"token\":\"");
+        const auto token_begin = login_body.find(token_key);
+        expect(token_begin != std::string::npos, "login response should contain token");
+        const auto value_begin = token_begin + token_key.size();
+        const auto value_end = login_body.find('"', value_begin);
+        expect(value_end != std::string::npos, "token should be quoted");
+        const auto token = login_body.substr(value_begin, value_end - value_begin);
+
+        HttpRequest authed;
+        authed.method = HttpMethod::Get;
+        authed.path = "/admin/users";
+        authed.headers["authorization"] = "Bearer " + token;
+        expect(auth.authenticate(authed, error), "bearer token should authenticate");
+        expect(authed.authenticated, "request should be marked authenticated");
+        expect(authed.is_admin, "admin user should carry admin role");
+        expect(authed.username == "admin", "authenticated username should be admin");
+
+        mini_oss::ObjectInfo object;
+        object.id = "1";
+        object.filename = "owned.txt";
+        object.path = root / "objects" / "1";
+        object.size = 128;
+        object.sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        object.created_at = "2026-06-27T00:00:00Z";
+        object.owner_user_id = authed.user_id;
+        expect(metadata.insertObject(object, error), "object metadata should insert with owner");
+        expect(metadata.incrementObjectDownloadCount("1", error), "download count should increment");
+        const auto stats = metadata.objectStorageStats(error);
+        expect(error.empty(), "object stats should not set error");
+        expect(stats.file_total == 1, "stats should count one object");
+        expect(stats.storage_bytes == 128, "stats should sum unique storage bytes");
+        expect(stats.upload_count == 1, "stats should count uploads");
+        expect(stats.download_count == 1, "stats should count downloads");
+
+        mini_oss::AuditLogRecord record;
+        record.request_id = "unit-1";
+        record.user_id = authed.user_id;
+        record.username = authed.username;
+        record.method = "GET";
+        record.path = "/admin/stats/overview";
+        record.action = "query_admin_stats";
+        record.status_code = 200;
+        record.result = "success";
+        record.client_ip = "127.0.0.1:12345";
+        record.created_at = "2026-06-27T00:00:01Z";
+        expect(metadata.insertAuditLog(record, error), "audit log should insert");
+        mini_oss::AuditLogQuery query;
+        query.action = "query_admin_stats";
+        const auto logs = metadata.listAuditLogs(query, error);
+        expect(error.empty(), "audit log query should not set error");
+        expect(logs.size() == 1, "audit query should return inserted record");
+        expect(logs.front().username == "admin", "audit log should keep username");
+    }
+    std::filesystem::remove_all(root);
+}
+
 void testObjectStore()
 {
     const auto root = makeTempDir("object_store");
@@ -311,6 +390,7 @@ void runAllTests()
     testRouter();
     testConfig();
     testRedisMetadataSerialization();
+    testAuthAuditAndStats();
     testObjectStore();
 }
 

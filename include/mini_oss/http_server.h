@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mini_oss/auth_service.h"
 #include "mini_oss/config.h"
 #include "mini_oss/logger.h"
 #include "mini_oss/metrics.h"
@@ -7,6 +8,7 @@
 #include "mini_oss/router.h"
 #include "mini_oss/thread_pool.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -110,7 +113,17 @@ private:
     void cleanupClientUpload(ClientState& state);
     void submitStreamingUpload(int client_fd, ClientState& state);
     bool requiresAuth(const HttpRequest& request) const;
-    bool isAuthorized(const HttpRequest& request) const;
+    std::optional<HttpResponse> authorizeRequest(HttpRequest& request);
+    bool isLegacyTokenAuthorized(const HttpRequest& request) const;
+    HttpResponse handleAdminUsers(const HttpRequest& request);
+    HttpResponse handleUpdateUserRoles(const HttpRequest& request);
+    HttpResponse handleAuditLogs(const HttpRequest& request);
+    HttpResponse handleAdminStatsOverview(const HttpRequest& request);
+    HttpResponse handleAdminStatsStatusCodes(const HttpRequest& request);
+    HttpResponse handleAdminStatsRedis(const HttpRequest& request);
+    void recordAudit(const HttpRequest& request, const HttpResponse& response,
+                     const std::string& remote_addr,
+                     std::chrono::steady_clock::time_point started_at);
     void logAccess(const std::string& remote, const std::string& method,
                    const std::string& path, int status_code,
                    std::size_t request_bytes, std::size_t response_bytes,
@@ -131,6 +144,7 @@ private:
     Metrics metrics_;
     std::uint64_t slow_request_ms_ = 200;
     std::string auth_token_;
+    std::atomic<std::uint64_t> next_request_id_ {1};
     std::size_t max_connections_ = 1024;
     std::filesystem::path upload_tmp_dir_;
     std::size_t max_request_bytes_ = 10 * 1024 * 1024;
@@ -139,6 +153,7 @@ private:
     std::uint64_t request_timeout_ms_ = 5000;
     std::uint64_t upload_timeout_ms_ = 30000;
     ObjectStore object_store_;
+    AuthService auth_service_;
     Router router_;
     ThreadPool thread_pool_;
 };
