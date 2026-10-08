@@ -82,7 +82,7 @@ def read_socket_response(sock: socket.socket, timeout: float = 3.0) -> str:
 
 def start_resource_guard_server(config_path: Path) -> subprocess.Popen[str]:
     proc = subprocess.Popen(
-        ["./build/mini_oss", "--config", str(config_path)],
+        [MINI_OSS_BINARY, "--config", str(config_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
