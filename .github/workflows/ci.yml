@@ -25,6 +25,9 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
+      - name: Smoke launcher regression
+        run: python3 -m unittest discover -s tests -p test_smoke_scripts.py -v
+
       - name: Smoke test
         run: ./scripts/smoke_test_http.py
 
